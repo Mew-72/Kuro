@@ -233,7 +233,19 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode]);
 
   // ---- Click-through control (Tauri) ----
-  // Browser: no-op. Tauri: starts ignoring cursor events; toggled on hover.
+  //
+  // The hover-based approach (mouseenter -> setIgnoreCursorEvents(false))
+  // CANNOT work: once setIgnoreCursorEvents(true) is active, the OS
+  // bypasses the webview entirely — including mouseenter — so the window
+  // can never re-enter interactive mode by hovering.
+  //
+  // Reliable approach: window stays click-through by default; user
+  // presses Ctrl+Shift+P to toggle "interactive mode". Keyboard shortcuts
+  // registered globally fire even while the window is click-through.
+  // Browser: no Tauri, window is naturally interactive — toggle is a no-op.
+  const [isInteractive, setIsInteractive] = useState(false);
+  const isInteractiveRef = useRef(false);
+
   const setIgnoreCursor = useCallback(async (ignore: boolean) => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     try {
@@ -246,20 +258,97 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     }
   }, []);
 
-  // Initialize click-through ON mount (Tauri only). Browser: skip entirely.
-  useEffect(() => {
-    setIgnoreCursor(true);
+  const toggleInteractive = useCallback(async () => {
+    const next = !isInteractiveRef.current;
+    isInteractiveRef.current = next;
+    setIsInteractive(next);
+    await setIgnoreCursor(!next);
   }, [setIgnoreCursor]);
 
+  // Initialize click-through + register Ctrl+Shift+P toggle.
+  useEffect(() => {
+    const isTauri = "__TAURI_INTERNALS__" in window;
+    let unregisterShortcut: (() => void) | null = null;
+
+    if (isTauri) {
+      // Start click-through ON.
+      setIgnoreCursor(true);
+      isInteractiveRef.current = false;
+      setIsInteractive(false);
+
+      // Register the global shortcut for toggling interactive mode.
+      (async () => {
+        try {
+          const gs: any = await import(
+            "@tauri-apps/plugin-global-shortcut"
+          );
+          const combo = "CommandOrControl+Shift+P";
+
+          // Clean any stale registration from prior reloads.
+          try {
+            await gs.unregister(combo);
+          } catch {}
+
+          await gs.register(combo, (event: any) => {
+            // Some plugin versions emit on both Pressed + Released;
+            // only act on Pressed to avoid double toggles.
+            if (
+              !event ||
+              event.state === undefined ||
+              event.state === "Pressed"
+            ) {
+              toggleInteractive();
+            }
+          });
+
+          unregisterShortcut = () => {
+            gs.unregister(combo).catch(() => {});
+          };
+        } catch (e) {
+          console.debug(
+            "[Kuro] @tauri-apps/plugin-global-shortcut not available. " +
+              "Install it to enable the Ctrl+Shift+K toggle. " +
+              "Falling back to in-window keydown (only works while window has focus).",
+            e,
+          );
+        }
+      })();
+    } else {
+      // Browser preview: always interactive.
+      isInteractiveRef.current = true;
+      setIsInteractive(true);
+    }
+
+    // In-window keydown fallback. Works in browser, and in Tauri while
+    // the window currently holds keyboard focus (e.g. just after toggling
+    // interactive on, or right after a click on the cat).
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "p"
+      ) {
+        e.preventDefault();
+        toggleInteractive();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (unregisterShortcut) unregisterShortcut();
+    };
+  }, [setIgnoreCursor, toggleInteractive]);
+
+  // Hover handlers are kept for browser preview / cursor visuals only.
+  // They intentionally do NOT toggle setIgnoreCursorEvents in Tauri.
   const handleMouseEnter = useCallback(() => {
     setIsHovering(true);
-    setIgnoreCursor(false);
-  }, [setIgnoreCursor]);
+  }, []);
 
   const handleMouseLeave = useCallback(() => {
     setIsHovering(false);
-    setIgnoreCursor(true);
-  }, [setIgnoreCursor]);
+  }, []);
 
   // Tauri event listener system
   useEffect(() => {
@@ -963,6 +1052,17 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           <div className="rounded-xl bg-white/85 px-3 py-2 text-xs text-neutral-700 shadow ring-1 ring-black/5">
             {modelError ? `Error: ${modelError}` : "Waking up..."}
           </div>
+        </div>
+      )}
+
+      {/* Interactive-mode indicator (Tauri only). Hidden in browser
+          where the window is always interactive. */}
+      {mounted && isInteractive && "__TAURI_INTERNALS__" in window && (
+        <div
+          className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black/80 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-white shadow"
+          style={{ pointerEvents: "none" }}
+        >
+          INTERACTIVE — Ctrl+Shift+P to lock
         </div>
       )}
 

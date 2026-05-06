@@ -37,7 +37,7 @@ export function KuroSettingsMenu({
   const [selectedState, setSelectedState] = React.useState<KuroState>("idle");
 
   return (
-    <div className="fixed right-6 bottom-32 z-[100] w-[320px] rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl text-zinc-200 animate-in fade-in slide-in-from-bottom-4 duration-300">
+    <div className="fixed right-6 bottom-32 z-100 w-[320px] rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl text-zinc-200 animate-in fade-in slide-in-from-bottom-4 duration-300">
         <div className="p-4 border-b border-zinc-700">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
             Character
