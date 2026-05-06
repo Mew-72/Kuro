@@ -50,32 +50,26 @@ function lerp(current: number, target: number, speed: number): number {
 }
 
 function perimeterToXY(t: number, w: number, h: number) {
-  // Maps t (0 to 1) to a point on the perimeter of a rectangle (w x h)
-  // Let's say:
-  // 0.00 - 0.25: Bottom edge (right to left)
-  // 0.25 - 0.50: Left edge (bottom to top)
-  // 0.50 - 0.75: Top edge (left to right)
-  // 0.75 - 1.00: Right edge (top to bottom)
   const perimeter = 2 * w + 2 * h;
   let dist = (t % 1) * perimeter;
 
-  // Start at bottom right, going left
   if (dist <= w) {
-    return { x: w - dist, y: h, dir: -1 }; // walking left
+    return { x: w - dist, y: h, dir: -1 };
   }
   dist -= w;
   if (dist <= h) {
-    return { x: 0, y: h - dist, dir: 1 }; // walking up (facing right/neutral)
+    return { x: 0, y: h - dist, dir: 1 };
   }
   dist -= h;
   if (dist <= w) {
-    return { x: dist, y: 0, dir: 1 }; // walking right
+    return { x: dist, y: 0, dir: 1 };
   }
   dist -= w;
-  return { x: w, y: dist, dir: -1 }; // walking down (facing left/neutral)
+  return { x: w, y: dist, dir: -1 };
 }
 
-const syncWindowPosition = async (x: number, y: number) => {
+// Tauri-only: move the OS window. No-op in browser.
+const moveWindow = async (x: number, y: number) => {
   if (!("__TAURI_INTERNALS__" in window)) return;
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -238,32 +232,34 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     return () => clearInterval(interval);
   }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode]);
 
-  // Handle click-through mode for Tauri
-  const handleMouseEnter = async () => {
+  // ---- Click-through control (Tauri) ----
+  // Browser: no-op. Tauri: starts ignoring cursor events; toggled on hover.
+  const setIgnoreCursor = useCallback(async (ignore: boolean) => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     try {
-      if (!window.__TAURI__) return;
-      const { getCurrentWebviewWindow } =
-        await import("@tauri-apps/api/webview");
-      await getCurrentWebviewWindow().setIgnoreCursorEvents(false);
-      setIsHovering(true);
+      const { getCurrentWebviewWindow } = await import(
+        "@tauri-apps/api/webview"
+      );
+      await getCurrentWebviewWindow().setIgnoreCursorEvents(ignore);
     } catch (e) {
-      console.debug("[Kuro] Failed to disable click-through:", e);
+      console.debug("[Kuro] Failed to set click-through:", e);
     }
-  };
+  }, []);
 
-  const handleMouseLeave = async () => {
-    try {
-      if (!window.__TAURI__) return;
-      const { getCurrentWebviewWindow } =
-        await import("@tauri-apps/api/webview");
-      await getCurrentWebviewWindow().setIgnoreCursorEvents(true);
-      setIsHovering(false);
-    } catch (e) {
-      console.debug("[Kuro] Failed to enable click-through:", e);
-    }
-  };
+  // Initialize click-through ON mount (Tauri only). Browser: skip entirely.
+  useEffect(() => {
+    setIgnoreCursor(true);
+  }, [setIgnoreCursor]);
 
-  // Remove the old useEffect for click-through to avoid conflicts
+  const handleMouseEnter = useCallback(() => {
+    setIsHovering(true);
+    setIgnoreCursor(false);
+  }, [setIgnoreCursor]);
+
+  const handleMouseLeave = useCallback(() => {
+    setIsHovering(false);
+    setIgnoreCursor(true);
+  }, [setIgnoreCursor]);
 
   // Tauri event listener system
   useEffect(() => {
@@ -271,8 +267,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
     const setup = async () => {
       try {
-        // Check if we're in a Tauri environment
-        if (!window.__TAURI__) {
+        if (!("__TAURI_INTERNALS__" in window)) {
           return;
         }
 
@@ -324,7 +319,6 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           await listen("kuro:idle", () => triggerState("sleeping")),
         );
       } catch (e) {
-        // Not in Tauri environment or events not available
         console.debug("[Kuro] Tauri events unavailable:", e);
       }
     };
@@ -432,7 +426,6 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       if (nextState) {
         e.preventDefault();
 
-        // If currently wandering/sleeping and switching to something else, return to base
         if (
           (stateRef.current === "wandering" ||
             stateRef.current === "sleeping") &&
@@ -459,16 +452,27 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     };
   }, [triggerState]);
 
-  const onPointerDown = (e: React.PointerEvent) => {
+  // Single unified pointerdown handler: clicks (left/right/double) + dragging.
+  const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
+    e.preventDefault();
 
+    // Right-click → judging + open settings.
+    if (e.button === 2) {
+      triggerState("judging");
+      openSettings();
+      return;
+    }
+
+    // Left-click → headpat / excited (double).
     if (e.button === 0) {
-      if (e.detail === 2) {
+      if (e.detail >= 2) {
         triggerState("excited");
       } else {
         triggerState("headpat");
       }
 
+      // Begin dragging.
       dragInfo.current.active = true;
       dragInfo.current.moved = false;
       dragInfo.current.offX = e.clientX - pos.x;
@@ -489,28 +493,22 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
         );
         clickCountRef.current = 0;
       }
-    } else if (e.button === 2) {
-      e.preventDefault();
-      triggerState("judging");
-      openSettings();
     }
   };
+
   // Autonomous behavior loop
   useEffect(() => {
     if (sleepTimerRef.current) clearTimeout(sleepTimerRef.current);
 
-    // Only run autonomous behavior if wandering/autonomous mode is enabled
     if (!settings.wandering) {
-      // Fallback to simple sleep logic if autonomous mode is off
       if (state === "idle") {
         sleepTimerRef.current = setTimeout(() => {
           triggerState("sleeping");
-        }, 30000); // 30s to sleep
+        }, 30000);
       }
       return;
     }
 
-    // List of states the pet can randomly decide to do
     const randomStates: KuroState[] = [
       "idle",
       "wandering",
@@ -520,20 +518,16 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       "excited",
     ];
 
-    // Don't interrupt a manual interaction like headpat immediately
     if (state !== "headpat") {
-      // Wait between 10s and 25s before deciding to do something new
       const nextActionTime = 10000 + Math.random() * 15000;
 
       sleepTimerRef.current = setTimeout(() => {
-        // 15% chance to fall asleep if currently just idling or wandering
         if (
           (state === "idle" || state === "wandering") &&
           Math.random() < 0.15
         ) {
           triggerState("sleeping");
         } else {
-          // Otherwise pick a random state
           const nextState =
             randomStates[Math.floor(Math.random() * randomStates.length)];
 
@@ -550,6 +544,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   }, [state, triggerState, settings.wandering]);
 
   // ---- PixiJS & Live2D Master Ticker ----
+  // PIXI app + Live2D model are created ONCE on mount and only destroyed
+  // on final unmount. No timers in this component touch app.destroy().
   useEffect(() => {
     let cancelled = false;
 
@@ -560,6 +556,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       while (!window.Live2DCubismCore && Date.now() - start < 8000) {
         await new Promise((r) => setTimeout(r, 50));
       }
+      if (cancelled) return;
       if (!window.Live2DCubismCore) {
         setModelError("Cubism core failed to load");
         return;
@@ -601,12 +598,19 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           autoInteract: false,
         });
 
+        if (cancelled) {
+          try {
+            model.destroy();
+          } catch {}
+          return;
+        }
+
         model.scale.set(0.17);
         if (model.anchor) {
-          model.anchor.set(0.5, 1.0); // anchor at feet, not center
+          model.anchor.set(0.5, 1.0);
         }
-        model.x = 175; // center of 350px canvas
-        model.y = 490; // near bottom of 500px canvas
+        model.x = 175;
+        model.y = 490;
 
         model.eventMode = "static";
         app.stage.addChild(model as any);
@@ -620,8 +624,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
         let wanderPauseTime = 0;
         let isWanderPaused = false;
-        let currentScaleX = 0.17; // Track scale for flipping
-        // Parameter state tracking
+        let currentScaleX = 0.17;
+
         const currentParams: Record<string, number> = {
           ParamAngleX: 0,
           ParamAngleY: 0,
@@ -638,27 +642,26 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           ParamMouthForm: 0,
           ParamMouthOpenY: 0,
           ParamArms: 0,
-          Param_Angle_Rotation2: 0, // tail
+          Param_Angle_Rotation2: 0,
         };
 
         const targetParams: Record<string, number> = { ...currentParams };
 
         app.ticker.add((delta: number) => {
-          const dt = delta * (1 / 60); // approx delta seconds
+          const dt = delta * (1 / 60);
           time += dt;
           const s = stateRef.current;
           const coreModel = model.internalModel?.coreModel;
           if (!coreModel) return;
 
-          // Base defaults (resets every frame before applying state logic)
           Object.keys(targetParams).forEach((k) => (targetParams[k] = 0));
           targetParams.ParamEyeLOpen = 1;
           targetParams.ParamEyeROpen = 1;
           targetParams.ParamMouthForm = 0;
           let lerpSpeed = 0.1;
-          let jumpY = 0; // For excited state physical bounce
+          let jumpY = 0;
 
-          // Random Blinking Logic (for states where eyes are open)
+          // Random Blinking Logic
           if (time - lastBlinkTime > nextBlinkInterval) {
             isBlinking = true;
             lastBlinkTime = time;
@@ -667,16 +670,15 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           if (isBlinking) {
             targetParams.ParamEyeLOpen = 0;
             targetParams.ParamEyeROpen = 0;
-            if (time - lastBlinkTime > 0.15) isBlinking = false; // blink duration
+            if (time - lastBlinkTime > 0.15) isBlinking = false;
           }
 
-          // State Logic
           switch (s) {
             case "idle":
               targetParams.ParamAngleY = Math.sin(time * 2) * 3;
               targetParams.ParamBodyAngleX = Math.sin(time * 1.5) * 2;
               targetParams.ParamMouthForm = 0.5;
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 1) * -5; // gentle tail
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 1) * -5;
               break;
 
             case "typing_slow":
@@ -687,82 +689,82 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
               targetParams.ParamBodyAngleY = -2;
               targetParams.ParamBodyAngleX = Math.sin(time * 1) * 1;
               targetParams.ParamMouthForm = Math.sin(time * 2) * 0.3;
-              targetParams.ParamArms = Math.sin(time * 6) * 4 + 3; // slow, deliberate typing
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 1.5) * -2; // gentle tail
+              targetParams.ParamArms = Math.sin(time * 6) * 4 + 3;
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 1.5) * -2;
               break;
 
             case "typing_fast":
-              lerpSpeed = 0.2; // faster response
+              lerpSpeed = 0.2;
               targetParams.ParamAngleY = Math.sin(time * 12) * 8;
               targetParams.ParamAngleX =
-                Math.sin(time * 14) * 5 + Math.sin(time * 7) * 3; // vigorous head shake
+                Math.sin(time * 14) * 5 + Math.sin(time * 7) * 3;
               targetParams.ParamEyeLOpen = isBlinking ? 0 : 1.0;
               targetParams.ParamEyeROpen = isBlinking ? 0 : 1.0;
-              targetParams.ParamBrowLY = Math.sin(time * 10) * 0.6; // eyebrows animate
+              targetParams.ParamBrowLY = Math.sin(time * 10) * 0.6;
               targetParams.ParamBrowRY = Math.sin(time * 10) * 0.6;
-              targetParams.ParamBodyAngleY = -6 + Math.sin(time * 8) * 2; // body sway excitement
-              targetParams.ParamBodyAngleX = Math.sin(time * 11) * 4; // more body movement
-              targetParams.ParamMouthForm = Math.sin(time * 9) * 0.5 + 0.3; // chatty mouth
+              targetParams.ParamBodyAngleY = -6 + Math.sin(time * 8) * 2;
+              targetParams.ParamBodyAngleX = Math.sin(time * 11) * 4;
+              targetParams.ParamMouthForm = Math.sin(time * 9) * 0.5 + 0.3;
               targetParams.ParamMouthOpenY = Math.abs(Math.sin(time * 9)) * 0.6;
-              targetParams.ParamArms = Math.sin(time * 22) * 15 + 10; // ultra-fast frantic typing arms
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 25) * 20; // super fast ear twitches/flicks
+              targetParams.ParamArms = Math.sin(time * 22) * 15 + 10;
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 25) * 20;
               break;
 
             case "sleeping":
-              lerpSpeed = 0.02; // very slow transitions
+              lerpSpeed = 0.02;
               targetParams.ParamEyeLOpen = 0;
               targetParams.ParamEyeROpen = 0;
               targetParams.ParamAngleY = -8;
-              targetParams.ParamBodyAngleY = Math.sin(time * 1) * -2 - 2; // slow breathing
+              targetParams.ParamBodyAngleY = Math.sin(time * 1) * -2 - 2;
               targetParams.ParamBodyAngleX = Math.sin(time * 0.5) * 1;
-              targetParams.Param_Angle_Rotation2 = 15; // curled tail
+              targetParams.Param_Angle_Rotation2 = 15;
               break;
 
             case "judging":
-              targetParams.ParamAngleZ = Math.sin(time * 3) * 15; // shaking head no
+              targetParams.ParamAngleZ = Math.sin(time * 3) * 15;
               targetParams.ParamAngleY = -5;
               targetParams.ParamEyeLOpen = 0.5;
               targetParams.ParamEyeROpen = 0.5;
               targetParams.ParamBrowLY = -0.5;
               targetParams.ParamBrowRY = -0.5;
               targetParams.ParamMouthForm = -0.5;
-              targetParams.ParamArms = 5; // crossed
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 5) * -10; // annoyed flick
+              targetParams.ParamArms = 5;
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 5) * -10;
               break;
 
             case "headpat":
               lerpSpeed = 0.2;
-              targetParams.ParamAngleY = Math.sin(time * 10) * 10 - 5; // bounce head
-              targetParams.ParamEyeLOpen = Math.sin(time * 5) > 0 ? 0 : 0.2; // happy squint
+              targetParams.ParamAngleY = Math.sin(time * 10) * 10 - 5;
+              targetParams.ParamEyeLOpen = Math.sin(time * 5) > 0 ? 0 : 0.2;
               targetParams.ParamEyeROpen = Math.sin(time * 5) > 0 ? 0 : 0.2;
               targetParams.ParamMouthForm = 1.0;
               targetParams.ParamMouthOpenY = 0.5;
-              targetParams.ParamAngleX = Math.sin(time * 8) * 15; // nuzzle side to side
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 20) * 20; // super fast wag
+              targetParams.ParamAngleX = Math.sin(time * 8) * 15;
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 20) * 20;
               break;
 
             case "excited":
               lerpSpeed = 0.35;
               targetParams.ParamAngleY =
-                Math.sin(time * 15) * 12 + Math.sin(time * 7) * 5; // wild head thrashing
-              targetParams.ParamAngleX = Math.sin(time * 13) * 8; // head tilts with energy
+                Math.sin(time * 15) * 12 + Math.sin(time * 7) * 5;
+              targetParams.ParamAngleX = Math.sin(time * 13) * 8;
               targetParams.ParamEyeLOpen = 1.0;
               targetParams.ParamEyeROpen = 1.0;
-              targetParams.ParamBrowLY = Math.sin(time * 12) * 1.0 + 0.8; // hyper eyebrows
+              targetParams.ParamBrowLY = Math.sin(time * 12) * 1.0 + 0.8;
               targetParams.ParamBrowRY = Math.sin(time * 12) * 1.0 + 0.8;
               targetParams.ParamMouthOpenY =
-                Math.abs(Math.sin(time * 11)) * 0.8 + 0.4; // big excited mouth
+                Math.abs(Math.sin(time * 11)) * 0.8 + 0.4;
               targetParams.ParamMouthForm = 1.0;
-              targetParams.ParamBodyAngleY = Math.sin(time * 10) * 3; // body gyrating
-              targetParams.ParamBodyAngleX = Math.sin(time * 14) * 4; // more body action
-              targetParams.ParamArms = Math.sin(time * 24) * 18 + 12; // mega-fast arms flailing
-              targetParams.Param_Angle_Rotation2 = Math.sin(time * 28) * 25; // insane ear/tail flicks
-              jumpY = Math.abs(Math.sin(time * 8)) * -30; // physical bounce
+              targetParams.ParamBodyAngleY = Math.sin(time * 10) * 3;
+              targetParams.ParamBodyAngleX = Math.sin(time * 14) * 4;
+              targetParams.ParamArms = Math.sin(time * 24) * 18 + 12;
+              targetParams.Param_Angle_Rotation2 = Math.sin(time * 28) * 25;
+              jumpY = Math.abs(Math.sin(time * 8)) * -30;
               break;
 
             case "wandering":
               if (!isWanderPaused) {
-                wanderTRef.current += dt * 0.02; // speed of perimeter walk
+                wanderTRef.current += dt * 0.02;
                 const screenW =
                   "__TAURI_INTERNALS__" in window
                     ? window.screen.availWidth
@@ -777,28 +779,21 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
                 targetPosRef.current = { x: targetLoc.x, y: targetLoc.y };
 
-                // Flip model based on direction
                 currentScaleX = lerp(currentScaleX, targetLoc.dir * 0.17, 0.1);
                 model.scale.x = currentScaleX;
 
-                // Walk Cycle Animation (since the model has no individual leg parameters)
-                const walkCycle = time * 12; // speed of steps
+                const walkCycle = time * 12;
 
-                // Body sway and rotation
-                targetParams.ParamBodyAngleX = Math.sin(walkCycle / 2) * 5; // Body twist
-                targetParams.ParamBodyAngleZ = Math.cos(walkCycle / 2) * 5; // Body lean side-to-side
+                targetParams.ParamBodyAngleX = Math.sin(walkCycle / 2) * 5;
+                targetParams.ParamBodyAngleZ = Math.cos(walkCycle / 2) * 5;
 
-                // Head bob and look
-                targetParams.ParamAngleY = Math.sin(walkCycle) * 3 - 2; // Head bobs with each step
-                targetParams.ParamAngleZ = Math.sin(walkCycle / 2) * 3; // Head tilts with body
+                targetParams.ParamAngleY = Math.sin(walkCycle) * 3 - 2;
+                targetParams.ParamAngleZ = Math.sin(walkCycle / 2) * 3;
 
-                // Arms swing
-                targetParams.ParamArms = Math.abs(Math.sin(walkCycle / 2)) * 8; // Arms swing up on every step
+                targetParams.ParamArms = Math.abs(Math.sin(walkCycle / 2)) * 8;
 
-                // Physical bounce (the "steps")
-                jumpY = Math.abs(Math.sin(walkCycle)) * -8; // Small hops simulating steps lifting off the ground
+                jumpY = Math.abs(Math.sin(walkCycle)) * -8;
 
-                // Mouse tracking
                 const center = {
                   x: pos.x + CANVAS_W / 2,
                   y: pos.y + CANVAS_H / 2,
@@ -816,15 +811,13 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
                   );
                 }
 
-                // Random pause logic
                 if (Math.random() < 0.005) {
                   isWanderPaused = true;
                   wanderPauseTime = time;
                 }
               } else {
-                // Paused / curious
                 targetParams.ParamAngleY = Math.sin(time * 2) * 3;
-                targetParams.ParamAngleX = Math.sin(time * 1) * 10; // looking around
+                targetParams.ParamAngleX = Math.sin(time * 1) * 10;
                 if (time - wanderPauseTime > 5) {
                   isWanderPaused = false;
                 }
@@ -832,13 +825,11 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
               break;
           }
 
-          // Force normal scale if not wandering
           if (s !== "wandering") {
             currentScaleX = lerp(currentScaleX, 0.17, 0.1);
             model.scale.x = currentScaleX;
           }
 
-          // Apply lerped values to Core Model
           for (const key of Object.keys(targetParams)) {
             currentParams[key] = lerp(
               currentParams[key],
@@ -848,46 +839,49 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
             coreModel.setParameterValueById(key, currentParams[key]);
           }
 
-          // Smoothly lerp physical component position (for wandering and return-to-base)
+          // Position handling
+          // - Wandering in Tauri: cat stays fixed inside the window at (0,0);
+          //   only the OS window moves via moveWindow().
+          // - Wandering in Browser: cat moves inside the page normally.
+          // - Otherwise: lerp toward target / honor drag position.
+          const isTauri = "__TAURI_INTERNALS__" in window;
+
           if (!dragInfo.current.active) {
-            setPos((p) => {
-              // We must lerp the base position separately from the jump bounce to prevent jitter
-              const baseY =
-                s === "excited"
-                  ? targetPosRef.current.y
-                  : currentAbsolutePosRef.current.y;
+            const baseY =
+              s === "excited"
+                ? targetPosRef.current.y
+                : currentAbsolutePosRef.current.y;
 
-              const nextX = lerp(
-                currentAbsolutePosRef.current.x,
-                targetPosRef.current.x,
-                0.05,
-              );
-              const nextYBase = lerp(baseY, targetPosRef.current.y, 0.05);
+            const nextX = lerp(
+              currentAbsolutePosRef.current.x,
+              targetPosRef.current.x,
+              0.05,
+            );
+            const nextYBase = lerp(baseY, targetPosRef.current.y, 0.05);
 
-              currentAbsolutePosRef.current = { x: nextX, y: nextYBase };
+            currentAbsolutePosRef.current = { x: nextX, y: nextYBase };
 
-              if ("__TAURI_INTERNALS__" in window && s === "wandering") {
-                syncWindowPosition(nextX, nextYBase + jumpY);
-                return { x: 0, y: 0 };
-              }
-
-              return { x: nextX, y: nextYBase + jumpY };
-            });
+            if (isTauri && s === "wandering") {
+              // Move OS window; keep cat fixed inside its own window.
+              moveWindow(nextX, nextYBase + jumpY);
+              setPos({ x: 0, y: 0 });
+            } else {
+              setPos({ x: nextX, y: nextYBase + jumpY });
+            }
           } else {
-            // If dragging, just apply jumpY on top of the dragged position
-            setPos((p) => {
-              if ("__TAURI_INTERNALS__" in window && s === "wandering") {
-                syncWindowPosition(
-                  targetPosRef.current.x,
-                  targetPosRef.current.y + jumpY,
-                );
-                return { x: 0, y: 0 };
-              }
-              return {
+            // Dragging
+            if (isTauri && s === "wandering") {
+              moveWindow(
+                targetPosRef.current.x,
+                targetPosRef.current.y + jumpY,
+              );
+              setPos({ x: 0, y: 0 });
+            } else {
+              setPos({
                 x: currentAbsolutePosRef.current.x,
                 y: targetPosRef.current.y + jumpY,
-              };
-            });
+              });
+            }
           }
         });
 
@@ -902,71 +896,98 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
     boot();
 
+    // ONLY destroy on final unmount. Nothing else in this component
+    // calls app.destroy() — no timers, no state-change effects.
     return () => {
       cancelled = true;
-      if (modelRef.current) modelRef.current.destroy();
-      if (appRef.current) appRef.current.destroy(true, { children: true });
+      try {
+        if (modelRef.current) modelRef.current.destroy();
+      } catch {}
+      try {
+        if (appRef.current) appRef.current.destroy(true, { children: true });
+      } catch {}
+      modelRef.current = null;
+      appRef.current = null;
     };
   }, []);
 
   return (
-    <>
-      <div
-        ref={wrapperRef}
-        className="fixed left-0 top-0 z-50 select-none transition-opacity duration-1000 pointer-events-none"
-        style={{
-          width: `${CANVAS_W}px`,
-          height: `${CANVAS_H}px`,
-          transform: `translate3d(${pos.x}px, ${pos.y}px, 0) scale(${settings.scale})`,
-          transformOrigin: "center center",
-          opacity: !mounted
-            ? "0"
-            : state === "sleeping"
-              ? `${0.6 * settings.opacity}`
-              : `${settings.opacity}`,
-          willChange: "transform",
-        }}
-      >
+    <div
+      style={{
+        position: "fixed",
+        left: 0,
+        top: 0,
+        pointerEvents: "none",
+        zIndex: 9999,
+        width: `${CANVAS_W}px`,
+        height: `${CANVAS_H}px`,
+        transform: `translate3d(${pos.x}px, ${pos.y}px, 0) scale(${settings.scale})`,
+        transformOrigin: "center center",
+        opacity: !mounted
+          ? 0
+          : state === "sleeping"
+            ? 0.6 * settings.opacity
+            : settings.opacity,
+        transition: "opacity 1s",
+        willChange: "transform",
+        userSelect: "none",
+      }}
+      ref={wrapperRef}
+    >
+      {/* Speech bubble / dialogue overlays — pointer-events: none */}
+      {currentDialogue && (
         <div
-          className="w-full h-full pointer-events-auto"
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-          onPointerDown={onPointerDown}
-          onContextMenu={(e) => e.preventDefault()}
-          style={{ cursor: isDragging ? "grabbing" : "grab" }}
+          className="absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center"
+          style={{ pointerEvents: "none" }}
         >
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_W}
-            height={CANVAS_H}
-            className="block h-full w-full pointer-events-none"
-          />
+          {currentDialogue}
+          <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
         </div>
+      )}
 
-        {/* Overlays */}
-        {currentDialogue && (
-          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center">
-            {currentDialogue}
-            <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
-          </div>
-        )}
+      {!currentDialogue && state === "judging" && (
+        <div
+          className="absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center"
+          style={{ pointerEvents: "none" }}
+        >
+          baka, stop scrolling Twitter 🐾
+          <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
+        </div>
+      )}
 
-        {!currentDialogue && state === "judging" && (
-          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center">
-            baka, stop scrolling Twitter 🐾
-            <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
+      {!ready && (
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={{ pointerEvents: "none" }}
+        >
+          <div className="rounded-xl bg-white/85 px-3 py-2 text-xs text-neutral-700 shadow ring-1 ring-black/5">
+            {modelError ? `Error: ${modelError}` : "Waking up..."}
           </div>
-        )}
+        </div>
+      )}
 
-        {!ready && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="rounded-xl bg-white/85 px-3 py-2 text-xs text-neutral-700 shadow ring-1 ring-black/5">
-              {modelError ? `Error: ${modelError}` : "Waking up..."}
-            </div>
-          </div>
-        )}
+      {/* The ONLY interactive element — hover toggles click-through, */}
+      {/* pointerdown handles clicks + drag. */}
+      <div
+        className="w-full h-full"
+        style={{
+          pointerEvents: "auto",
+          cursor: isDragging ? "grabbing" : "pointer",
+        }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onPointerDown={handlePointerDown}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_W}
+          height={CANVAS_H}
+          className="block h-full w-full"
+          style={{ pointerEvents: "none" }}
+        />
       </div>
-    </>
+    </div>
   );
 });
 
