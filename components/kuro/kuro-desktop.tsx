@@ -75,6 +75,15 @@ function perimeterToXY(t: number, w: number, h: number) {
   return { x: w, y: dist, dir: -1 }; // walking down (facing left/neutral)
 }
 
+const syncWindowPosition = async (x: number, y: number) => {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const { LogicalPosition } = await import("@tauri-apps/api/dpi");
+    await getCurrentWindow().setPosition(new LogicalPosition(x, y));
+  } catch {}
+};
+
 const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -135,6 +144,10 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPosRef = useRef({ x: 0, y: 0 });
   const velocityRef = useRef(0);
+  const currentAbsolutePosRef = useRef({
+    x: typeof window !== "undefined" ? window.innerWidth - CANVAS_W - 24 : 0,
+    y: typeof window !== "undefined" ? window.innerHeight - CANVAS_H - 24 : 0,
+  });
 
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -352,6 +365,16 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
         );
       }
 
+      // Drag pickup detection
+      if (!dragInfo.current.moved) {
+        if (Math.random() < 0.3) {
+          triggerState(
+            "idle",
+            draggingLines[Math.floor(Math.random() * draggingLines.length)],
+          );
+        }
+      }
+
       // Edge bump detection
       if (
         (nextX <= 0 || nextX >= maxX || nextY <= -200 || nextY >= maxY) &&
@@ -363,6 +386,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       }
 
       lastPosRef.current = { x: nextX, y: nextY };
+      currentAbsolutePosRef.current = { x: nextX, y: nextY };
       dragInfo.current.moved = true;
       setPos({ x: nextX, y: nextY });
       targetPosRef.current = { x: nextX, y: nextY };
@@ -436,52 +460,41 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   }, [triggerState]);
 
   const onPointerDown = (e: React.PointerEvent) => {
-    dragInfo.current.active = true;
-    dragInfo.current.moved = false;
-    dragInfo.current.offX = e.clientX - pos.x;
-    dragInfo.current.offY = e.clientY - pos.y;
-    setIsDragging(true);
+    e.stopPropagation();
 
-    if (Math.random() < 0.3) {
-      triggerState(
-        "idle",
-        draggingLines[Math.floor(Math.random() * draggingLines.length)],
-      );
+    if (e.button === 0) {
+      if (e.detail === 2) {
+        triggerState("excited");
+      } else {
+        triggerState("headpat");
+      }
+
+      dragInfo.current.active = true;
+      dragInfo.current.moved = false;
+      dragInfo.current.offX = e.clientX - pos.x;
+      dragInfo.current.offY = e.clientY - pos.y;
+      setIsDragging(true);
+
+      // Click spam detection
+      clickCountRef.current += 1;
+      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = setTimeout(() => {
+        clickCountRef.current = 0;
+      }, 2000);
+
+      if (clickCountRef.current > 5) {
+        triggerState(
+          "judging",
+          annoyedLines[Math.floor(Math.random() * annoyedLines.length)],
+        );
+        clickCountRef.current = 0;
+      }
+    } else if (e.button === 2) {
+      e.preventDefault();
+      triggerState("judging");
+      openSettings();
     }
   };
-
-  const onClick = (e: React.MouseEvent) => {
-    if (dragInfo.current.moved) return;
-
-    // Click spam detection
-    clickCountRef.current += 1;
-    if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
-    clickTimeoutRef.current = setTimeout(() => {
-      clickCountRef.current = 0;
-    }, 2000);
-
-    if (clickCountRef.current > 5) {
-      triggerState(
-        "judging",
-        annoyedLines[Math.floor(Math.random() * annoyedLines.length)],
-      );
-      clickCountRef.current = 0;
-      return;
-    }
-
-    if (e.detail === 2) {
-      triggerState("excited");
-    } else {
-      triggerState("headpat");
-    }
-  };
-
-  const onContextMenu = (e: React.MouseEvent) => {
-    if (dragInfo.current.moved) return;
-    e.preventDefault();
-    openSettings();
-  };
-
   // Autonomous behavior loop
   useEffect(() => {
     if (sleepTimerRef.current) clearTimeout(sleepTimerRef.current);
@@ -750,8 +763,16 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
             case "wandering":
               if (!isWanderPaused) {
                 wanderTRef.current += dt * 0.02; // speed of perimeter walk
-                const maxW = window.innerWidth - CANVAS_W;
-                const maxH = window.innerHeight - CANVAS_H;
+                const screenW =
+                  "__TAURI_INTERNALS__" in window
+                    ? window.screen.availWidth
+                    : window.innerWidth;
+                const screenH =
+                  "__TAURI_INTERNALS__" in window
+                    ? window.screen.availHeight
+                    : window.innerHeight;
+                const maxW = screenW - CANVAS_W;
+                const maxH = screenH - CANVAS_H;
                 const targetLoc = perimeterToXY(wanderTRef.current, maxW, maxH);
 
                 targetPosRef.current = { x: targetLoc.x, y: targetLoc.y };
@@ -831,20 +852,41 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           if (!dragInfo.current.active) {
             setPos((p) => {
               // We must lerp the base position separately from the jump bounce to prevent jitter
-              // p.y includes the previous frame's jumpY, so we calculate the true base Y
-              const baseY = s === "excited" ? targetPosRef.current.y : p.y;
+              const baseY =
+                s === "excited"
+                  ? targetPosRef.current.y
+                  : currentAbsolutePosRef.current.y;
 
-              const nextX = lerp(p.x, targetPosRef.current.x, 0.05);
+              const nextX = lerp(
+                currentAbsolutePosRef.current.x,
+                targetPosRef.current.x,
+                0.05,
+              );
               const nextYBase = lerp(baseY, targetPosRef.current.y, 0.05);
+
+              currentAbsolutePosRef.current = { x: nextX, y: nextYBase };
+
+              if ("__TAURI_INTERNALS__" in window && s === "wandering") {
+                syncWindowPosition(nextX, nextYBase + jumpY);
+                return { x: 0, y: 0 };
+              }
 
               return { x: nextX, y: nextYBase + jumpY };
             });
           } else {
             // If dragging, just apply jumpY on top of the dragged position
             setPos((p) => {
-              // Assuming p.y during drag is set by onPointerMove, we shouldn't mutate it wildly
-              // So we just return it. The dragging is manual.
-              return { x: p.x, y: targetPosRef.current.y + jumpY };
+              if ("__TAURI_INTERNALS__" in window && s === "wandering") {
+                syncWindowPosition(
+                  targetPosRef.current.x,
+                  targetPosRef.current.y + jumpY,
+                );
+                return { x: 0, y: 0 };
+              }
+              return {
+                x: currentAbsolutePosRef.current.x,
+                y: targetPosRef.current.y + jumpY,
+              };
             });
           }
         });
@@ -884,19 +926,22 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
               : `${settings.opacity}`,
           willChange: "transform",
         }}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
       >
-        <canvas
-          ref={canvasRef}
-          width={CANVAS_W}
-          height={CANVAS_H}
-          className="block h-full w-full pointer-events-auto"
-          style={{ cursor: isDragging ? "grabbing" : "grab" }}
+        <div
+          className="w-full h-full pointer-events-auto"
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
           onPointerDown={onPointerDown}
-          onClick={onClick}
-          onContextMenu={onContextMenu}
-        />
+          onContextMenu={(e) => e.preventDefault()}
+          style={{ cursor: isDragging ? "grabbing" : "grab" }}
+        >
+          <canvas
+            ref={canvasRef}
+            width={CANVAS_W}
+            height={CANVAS_H}
+            className="block h-full w-full pointer-events-none"
+          />
+        </div>
 
         {/* Overlays */}
         {currentDialogue && (
