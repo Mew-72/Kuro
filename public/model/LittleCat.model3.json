@@ -1,0 +1,28 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "LittleCat.moc3",
+    "Textures": ["LittleCat.2048/texture_00.png"],
+    "Physics": "LittleCat.physics3.json",
+    "DisplayInfo": "LittleCat.cdi3.json",
+    "Motions": {
+      "Idle": [{ "File": "motions/idle.motion3.json" }],
+      "TapBody": [{ "File": "motions/tapbody.motion3.json" }],
+      "Sleep": [{ "File": "motions/sleep.motion3.json" }],
+      "Judging": [{ "File": "motions/judging.motion3.json" }],
+      "Headpat": [{ "File": "motions/headpat.motion3.json" }]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": ["ParamEyeLOpen", "ParamEyeROpen"]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": ["ParamMouthForm", "ParamMouthOpenY"]
+    }
+  ]
+}

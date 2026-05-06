@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.15 0 0);
+    --radius: 0.5rem;
+}
+
+html, body {
+  background: transparent !important;
+  margin: 0;
+  padding: 0;
+}
+
+@theme inline {
+    --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+}
+
+@layer base {
+    html {
+        background: var(--background);
+    }
+    body {
+        color: var(--foreground);
+        overflow: hidden;
+    }
+}
+
+@layer components {
+    @keyframes kuro-jump {
+        0% {
+            transform: translateY(0);
+        }
+        15% {
+            transform: translateY(-40px);
+        }
+        30% {
+            transform: translateY(5px);
+        }
+        45% {
+            transform: translateY(-15px);
+        }
+        60% {
+            transform: translateY(0);
+        }
+        100% {
+            transform: translateY(0);
+        }
+    }
+    .animate-kuro-jump {
+        animation: kuro-jump 1.5s cubic-bezier(0.28, 0.84, 0.42, 1) forwards;
+    }
+
+    @keyframes kuro-expression-pop {
+        0% {
+            transform: translate(-50%, 8px) scale(0.6);
+            opacity: 0;
+        }
+        25% {
+            transform: translate(-50%, 0) scale(1.15);
+            opacity: 1;
+        }
+        40% {
+            transform: translate(-50%, 0) scale(1);
+        }
+        85% {
+            opacity: 1;
+        }
+        100% {
+            opacity: 0;
+            transform: translate(-50%, 0) scale(0.95);
+        }
+    }
+    .kuro-expression {
+        animation: kuro-expression-pop 2s ease-out forwards;
+    }
+}
