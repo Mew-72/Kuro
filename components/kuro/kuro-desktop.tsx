@@ -225,29 +225,32 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     return () => clearInterval(interval);
   }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode]);
 
-  // Handle click-through mode for Tauri (disable when hovering over the cat)
-  useEffect(() => {
-    const updateClickThrough = async () => {
-      try {
-        const { getCurrentWebviewWindow } =
-          await import("@tauri-apps/api/webview");
+  // Handle click-through mode for Tauri
+  const handleMouseEnter = async () => {
+    try {
+      if (!window.__TAURI__) return;
+      const { getCurrentWebviewWindow } =
+        await import("@tauri-apps/api/webview");
+      await getCurrentWebviewWindow().setIgnoreCursorEvents(false);
+      setIsHovering(true);
+    } catch (e) {
+      console.debug("[Kuro] Failed to disable click-through:", e);
+    }
+  };
 
-        const appWindow = getCurrentWebviewWindow();
-        if (isHovering) {
-          // Disable click-through when mouse is over the cat
-          await appWindow.setIgnoreCursorEvents(false);
-        } else {
-          // Enable click-through when mouse is away
-          await appWindow.setIgnoreCursorEvents(true);
-        }
-      } catch (e) {
-        // Not in Tauri environment or API not available
-        console.debug("[Kuro] Click-through unavailable:", e);
-      }
-    };
+  const handleMouseLeave = async () => {
+    try {
+      if (!window.__TAURI__) return;
+      const { getCurrentWebviewWindow } =
+        await import("@tauri-apps/api/webview");
+      await getCurrentWebviewWindow().setIgnoreCursorEvents(true);
+      setIsHovering(false);
+    } catch (e) {
+      console.debug("[Kuro] Failed to enable click-through:", e);
+    }
+  };
 
-    updateClickThrough();
-  }, [isHovering]);
+  // Remove the old useEffect for click-through to avoid conflicts
 
   // Tauri event listener system
   useEffect(() => {
@@ -881,6 +884,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
               : `${settings.opacity}`,
           willChange: "transform",
         }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       >
         <canvas
           ref={canvasRef}
@@ -888,8 +893,6 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           height={CANVAS_H}
           className="block h-full w-full pointer-events-auto"
           style={{ cursor: isDragging ? "grabbing" : "grab" }}
-          onMouseEnter={() => setIsHovering(true)}
-          onMouseLeave={() => setIsHovering(false)}
           onPointerDown={onPointerDown}
           onClick={onClick}
           onContextMenu={onContextMenu}
@@ -897,14 +900,14 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
         {/* Overlays */}
         {currentDialogue && (
-          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 whitespace-nowrap rounded-xl bg-white px-4 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300">
+          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center">
             {currentDialogue}
             <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
           </div>
         )}
 
         {!currentDialogue && state === "judging" && (
-          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 whitespace-nowrap rounded-xl bg-white px-4 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300">
+          <div className="pointer-events-none absolute left-1/2 bottom-[195px] -translate-x-1/2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in duration-300 max-w-[220px] whitespace-normal break-words text-center">
             baka, stop scrolling Twitter 🐾
             <span className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white border-b border-r border-black/5" />
           </div>

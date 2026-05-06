@@ -43,7 +43,11 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html: `
-            document.addEventListener('contextmenu', (e) => e.preventDefault())
+            document.addEventListener('contextmenu', (e) => {
+              if (e.target.tagName !== 'CANVAS') {
+                e.preventDefault()
+              }
+            })
           `,
           }}
         />
