@@ -10,18 +10,45 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [{
-      "title": "Kuro",
-      "width": 400,
-      "height": 600,
-      "transparent": true,
-      "decorations": false,
-      "alwaysOnTop": true,
-      "skipTaskbar": false,
-      "resizable": false
-    }],
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kuro",
+        "width": 350,
+        "height": 500,
+        "minWidth": 350,
+        "minHeight": 500,
+        "maxWidth": 350,
+        "maxHeight": 500,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "fullscreen": false,
+        "shadow": false
+      },
+      {
+        "label": "settings",
+        "title": "Kuro Settings",
+        "url": "/settings",
+        "width": 380,
+        "height": 600,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "visible": false,
+        "center": true
+      }
+    ],
     "security": {
-      "csp": null
+      "csp": null,
+      "devCsp": null
     }
   },
   "bundle": {

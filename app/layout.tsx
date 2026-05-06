@@ -33,16 +33,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} bg-background`}
-    >
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <head>
         {/* Cubism 4 core must load before pixi-live2d-display tries to instantiate models. */}
         <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js" />
       </head>
       <body className="font-sans antialiased">
         {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+            document.addEventListener('contextmenu', (e) => e.preventDefault())
+          `,
+          }}
+        />
         {process.env.NODE_ENV === "production" && <Analytics />}
       </body>
     </html>

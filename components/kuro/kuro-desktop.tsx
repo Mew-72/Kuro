@@ -18,6 +18,10 @@ import {
   excitedLines,
   batteryLines,
   lateNightLines,
+  draggingLines,
+  shakeLines,
+  annoyedLines,
+  curiousLines,
 } from "../lines";
 
 // --- Types ---
@@ -90,7 +94,20 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     dialogueInterval: 30,
     lateNightMode: true,
   });
-  const [showSettings, setShowSettings] = useState(false);
+
+  const openSettings = async () => {
+    try {
+      const { Window } = await import("@tauri-apps/api/window");
+      const settingsWin = await Window.getByLabel("settings");
+      if (settingsWin) {
+        await settingsWin.show();
+        await settingsWin.setFocus();
+      }
+    } catch (e) {
+      console.debug("[Kuro] Failed to open settings window:", e);
+    }
+  };
+
   const [currentDialogue, setCurrentDialogue] = useState<string | null>(null);
   const [isHovering, setIsHovering] = useState(false);
 
@@ -114,11 +131,16 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   // State timers
   const stateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickCountRef = useRef(0);
+  const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPosRef = useRef({ x: 0, y: 0 });
+  const velocityRef = useRef(0);
+
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
   // Expose Imperative API
-  const triggerState = useCallback((next: KuroState) => {
+  const triggerState = useCallback((next: KuroState, customLine?: string) => {
     const prevState = stateRef.current;
     setState(next);
     stateRef.current = next;
@@ -136,7 +158,9 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
     // Handle immediate explicit dialogues
     if (settingsRef.current.dialogue) {
-      if (next === "judging") {
+      if (customLine) {
+        setCurrentDialogue(customLine);
+      } else if (next === "judging") {
         setCurrentDialogue(
           judgingLines[Math.floor(Math.random() * judgingLines.length)],
         );
@@ -153,7 +177,10 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           wakeUpLines[Math.floor(Math.random() * wakeUpLines.length)],
         );
       }
-      if (["judging", "headpat", "excited", "idle"].includes(next)) {
+      if (
+        ["judging", "headpat", "excited", "idle"].includes(next) ||
+        customLine
+      ) {
         setTimeout(() => setCurrentDialogue(null), 5000);
       }
     }
@@ -198,73 +225,96 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     return () => clearInterval(interval);
   }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode]);
 
-  // Handle click-through mode for Tauri (disable when settings is open)
+  // Handle click-through mode for Tauri (disable when hovering over the cat)
   useEffect(() => {
     const updateClickThrough = async () => {
       try {
-        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webview");
-        const { isPermissionGranted, requestPermission, sendNotification } = await import("@tauri-apps/api/notification");
-        
+        const { getCurrentWebviewWindow } =
+          await import("@tauri-apps/api/webview");
+
         const appWindow = getCurrentWebviewWindow();
-        if (showSettings) {
-          // Disable click-through when settings is open
+        if (isHovering) {
+          // Disable click-through when mouse is over the cat
           await appWindow.setIgnoreCursorEvents(false);
         } else {
-          // Enable click-through when settings is closed (only allow interaction with the cat)
+          // Enable click-through when mouse is away
           await appWindow.setIgnoreCursorEvents(true);
         }
       } catch (e) {
         // Not in Tauri environment or API not available
+        console.debug("[Kuro] Click-through unavailable:", e);
       }
     };
-    
+
     updateClickThrough();
-  }, [showSettings]);
+  }, [isHovering]);
 
   // Tauri event listener system
   useEffect(() => {
-    let unlisten: (() => void)[] = []
+    let unlisten: (() => void)[] = [];
 
     const setup = async () => {
       try {
         // Check if we're in a Tauri environment
         if (!window.__TAURI__) {
-          return
+          return;
         }
 
-        const { listen } = await import('@tauri-apps/api/event')
+        const { listen } = await import("@tauri-apps/api/event");
 
-        unlisten.push(await listen<{ state: KuroState }>('kuro:trigger-state', (e) => {
-          triggerState(e.payload.state)
-        }))
+        unlisten.push(
+          await listen<{ state: KuroState }>("kuro:trigger-state", (e) => {
+            triggerState(e.payload.state);
+          }),
+        );
 
-        unlisten.push(await listen<{ wpm: number }>('kuro:typing-speed', (e) => {
-          if (e.payload.wpm === 0) triggerState('idle')
-          else if (e.payload.wpm < 40) triggerState('typing_slow')
-          else triggerState('typing_fast')
-        }))
+        unlisten.push(
+          await listen<KuroSettings>("kuro:settings-updated", (e) => {
+            setSettings(e.payload);
+          }),
+        );
 
-        unlisten.push(await listen<{ percent: number }>('kuro:battery', (e) => {
-          if (e.payload.percent <= 15) triggerState('judging')
-        }))
+        unlisten.push(
+          await listen<{ wpm: number }>("kuro:typing-speed", (e) => {
+            if (e.payload.wpm === 0) triggerState("idle");
+            else if (e.payload.wpm < 40) triggerState("typing_slow");
+            else triggerState("typing_fast");
+          }),
+        );
 
-        unlisten.push(await listen<{ title: string }>('kuro:active-window', (e) => {
-          const title = e.payload.title.toLowerCase()
-          const distractors = ['twitter', 'youtube', 'instagram', 'reddit', 'netflix']
-          if (distractors.some(d => title.includes(d))) {
-            triggerState('judging')
-          }
-        }))
+        unlisten.push(
+          await listen<{ percent: number }>("kuro:battery", (e) => {
+            if (e.payload.percent <= 15) triggerState("judging");
+          }),
+        );
 
-        unlisten.push(await listen('kuro:idle', () => triggerState('sleeping')))
+        unlisten.push(
+          await listen<{ title: string }>("kuro:active-window", (e) => {
+            const title = e.payload.title.toLowerCase();
+            const distractors = [
+              "twitter",
+              "youtube",
+              "instagram",
+              "reddit",
+              "netflix",
+            ];
+            if (distractors.some((d) => title.includes(d))) {
+              triggerState("judging");
+            }
+          }),
+        );
+
+        unlisten.push(
+          await listen("kuro:idle", () => triggerState("sleeping")),
+        );
       } catch (e) {
         // Not in Tauri environment or events not available
-        console.debug('[Kuro] Tauri events unavailable:', e)
+        console.debug("[Kuro] Tauri events unavailable:", e);
       }
-    }
+    };
 
-    setup()
-    return () => unlisten.forEach(fn => fn())
+    setup();
+    return () => unlisten.forEach((fn) => fn());
   }, [triggerState]);
 
   // Initial Mount & Resize bounds
@@ -286,6 +336,30 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       const nextX = Math.max(0, Math.min(dx, maxX));
       const nextY = Math.max(-200, Math.min(dy, maxY));
 
+      // Shake detection
+      const dist = Math.hypot(
+        nextX - lastPosRef.current.x,
+        nextY - lastPosRef.current.y,
+      );
+      velocityRef.current = dist;
+      if (dist > 80 && stateRef.current !== "excited") {
+        triggerState(
+          "excited",
+          shakeLines[Math.floor(Math.random() * shakeLines.length)],
+        );
+      }
+
+      // Edge bump detection
+      if (
+        (nextX <= 0 || nextX >= maxX || nextY <= -200 || nextY >= maxY) &&
+        !dragInfo.current.moved
+      ) {
+        if (Math.random() < 0.1) {
+          triggerState("judging", "Watch the walls! 😾");
+        }
+      }
+
+      lastPosRef.current = { x: nextX, y: nextY };
       dragInfo.current.moved = true;
       setPos({ x: nextX, y: nextY });
       targetPosRef.current = { x: nextX, y: nextY };
@@ -299,43 +373,52 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     const onPointerUp = () => {
       dragInfo.current.active = false;
       setIsDragging(false);
+      velocityRef.current = 0;
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // Exit wandering or sleep on key press (simulate typing)
-      if (stateRef.current === "wandering" || stateRef.current === "sleeping") {
-        triggerState("typing_slow");
-        // Animate back to corner
-        targetPosRef.current = {
-          x: window.innerWidth - CANVAS_W - 24,
-          y: window.innerHeight - CANVAS_H - 24,
+      if (e.key === "Escape") {
+        const closeSettings = async () => {
+          try {
+            const { Window } = await import("@tauri-apps/api/window");
+            const settingsWin = await Window.getByLabel("settings");
+            await settingsWin?.hide();
+          } catch (e) {
+            console.debug("[Kuro] Failed to close settings window:", e);
+          }
         };
+        closeSettings();
+        return;
       }
 
-      // Test shortcuts
-      switch (e.key) {
-        case "1":
-          triggerState("idle");
-          break;
-        case "2":
-          triggerState("typing_slow");
-          break;
-        case "3":
-          triggerState("typing_fast");
-          break;
-        case "4":
-          triggerState("sleeping");
-          break;
-        case "5":
-          triggerState("judging");
-          break;
-        case "6":
-          triggerState("wandering");
-          break;
-        case "s":
-        case "S":
-          setShowSettings((prev) => !prev);
-          break;
+      const shortcuts: Record<string, KuroState> = {
+        "1": "idle",
+        "2": "typing_slow",
+        "3": "typing_fast",
+        "4": "sleeping",
+        "5": "judging",
+        "6": "excited",
+        "7": "wandering",
+      };
+
+      const nextState = shortcuts[e.key];
+      if (nextState) {
+        e.preventDefault();
+
+        // If currently wandering/sleeping and switching to something else, return to base
+        if (
+          (stateRef.current === "wandering" ||
+            stateRef.current === "sleeping") &&
+          nextState !== "wandering" &&
+          nextState !== "sleeping"
+        ) {
+          targetPosRef.current = {
+            x: window.innerWidth - CANVAS_W - 24,
+            y: window.innerHeight - CANVAS_H - 24,
+          };
+        }
+
+        triggerState(nextState);
       }
     };
 
@@ -355,10 +438,34 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     dragInfo.current.offX = e.clientX - pos.x;
     dragInfo.current.offY = e.clientY - pos.y;
     setIsDragging(true);
+
+    if (Math.random() < 0.3) {
+      triggerState(
+        "idle",
+        draggingLines[Math.floor(Math.random() * draggingLines.length)],
+      );
+    }
   };
 
   const onClick = (e: React.MouseEvent) => {
     if (dragInfo.current.moved) return;
+
+    // Click spam detection
+    clickCountRef.current += 1;
+    if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+    clickTimeoutRef.current = setTimeout(() => {
+      clickCountRef.current = 0;
+    }, 2000);
+
+    if (clickCountRef.current > 5) {
+      triggerState(
+        "judging",
+        annoyedLines[Math.floor(Math.random() * annoyedLines.length)],
+      );
+      clickCountRef.current = 0;
+      return;
+    }
+
     if (e.detail === 2) {
       triggerState("excited");
     } else {
@@ -369,7 +476,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const onContextMenu = (e: React.MouseEvent) => {
     if (dragInfo.current.moved) return;
     e.preventDefault();
-    setShowSettings(true);
+    openSettings();
   };
 
   // Autonomous behavior loop
@@ -413,7 +520,14 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           // Otherwise pick a random state
           const nextState =
             randomStates[Math.floor(Math.random() * randomStates.length)];
-          triggerState(nextState);
+
+          let line: string | undefined = undefined;
+          if (nextState === "idle" && Math.random() < 0.2) {
+            line =
+              curiousLines[Math.floor(Math.random() * curiousLines.length)];
+          }
+
+          triggerState(nextState, line);
         }
       }, nextActionTime);
     }
@@ -564,7 +678,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
             case "typing_fast":
               lerpSpeed = 0.2; // faster response
               targetParams.ParamAngleY = Math.sin(time * 12) * 8;
-              targetParams.ParamAngleX = Math.sin(time * 14) * 5 + Math.sin(time * 7) * 3; // vigorous head shake
+              targetParams.ParamAngleX =
+                Math.sin(time * 14) * 5 + Math.sin(time * 7) * 3; // vigorous head shake
               targetParams.ParamEyeLOpen = isBlinking ? 0 : 1.0;
               targetParams.ParamEyeROpen = isBlinking ? 0 : 1.0;
               targetParams.ParamBrowLY = Math.sin(time * 10) * 0.6; // eyebrows animate
@@ -612,13 +727,15 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
             case "excited":
               lerpSpeed = 0.35;
-              targetParams.ParamAngleY = Math.sin(time * 15) * 12 + Math.sin(time * 7) * 5; // wild head thrashing
+              targetParams.ParamAngleY =
+                Math.sin(time * 15) * 12 + Math.sin(time * 7) * 5; // wild head thrashing
               targetParams.ParamAngleX = Math.sin(time * 13) * 8; // head tilts with energy
               targetParams.ParamEyeLOpen = 1.0;
               targetParams.ParamEyeROpen = 1.0;
               targetParams.ParamBrowLY = Math.sin(time * 12) * 1.0 + 0.8; // hyper eyebrows
               targetParams.ParamBrowRY = Math.sin(time * 12) * 1.0 + 0.8;
-              targetParams.ParamMouthOpenY = Math.abs(Math.sin(time * 11)) * 0.8 + 0.4; // big excited mouth
+              targetParams.ParamMouthOpenY =
+                Math.abs(Math.sin(time * 11)) * 0.8 + 0.4; // big excited mouth
               targetParams.ParamMouthForm = 1.0;
               targetParams.ParamBodyAngleY = Math.sin(time * 10) * 3; // body gyrating
               targetParams.ParamBodyAngleX = Math.sin(time * 14) * 4; // more body action
@@ -751,9 +868,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     <>
       <div
         ref={wrapperRef}
-        className="fixed left-0 top-0 z-50 select-none transition-opacity duration-1000"
-        onMouseEnter={() => setIsHovering(true)}
-        onMouseLeave={() => setIsHovering(false)}
+        className="fixed left-0 top-0 z-50 select-none transition-opacity duration-1000 pointer-events-none"
         style={{
           width: `${CANVAS_W}px`,
           height: `${CANVAS_H}px`,
@@ -764,19 +879,20 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
             : state === "sleeping"
               ? `${0.6 * settings.opacity}`
               : `${settings.opacity}`,
-          cursor: isDragging ? "grabbing" : "grab",
           willChange: "transform",
         }}
-        onPointerDown={onPointerDown}
-        onClick={onClick}
-        onContextMenu={onContextMenu}
       >
         <canvas
           ref={canvasRef}
           width={CANVAS_W}
           height={CANVAS_H}
-          className="block h-full w-full"
-          style={{ pointerEvents: "none" }}
+          className="block h-full w-full pointer-events-auto"
+          style={{ cursor: isDragging ? "grabbing" : "grab" }}
+          onMouseEnter={() => setIsHovering(true)}
+          onMouseLeave={() => setIsHovering(false)}
+          onPointerDown={onPointerDown}
+          onClick={onClick}
+          onContextMenu={onContextMenu}
         />
 
         {/* Overlays */}
@@ -802,17 +918,6 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           </div>
         )}
       </div>
-
-      {showSettings && (
-        <KuroSettingsMenu
-          settings={settings}
-          onChange={(newSettings) =>
-            setSettings((s) => ({ ...s, ...newSettings }))
-          }
-          onTriggerState={triggerState}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
     </>
   );
 });

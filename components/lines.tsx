@@ -9,6 +9,8 @@ export const headpatLines = [
   "My dignity is gone but honestly? Worth it.",
   "Don't tell anyone I enjoyed that.",
   "≧◡≦ ...I mean. Hmph.",
+  "My fur is going to be a mess because of you.",
+  "Is this... what 'affection' feels like? Gross. (More please.)",
 ];
 
 export const idleLines = [
@@ -25,6 +27,9 @@ export const idleLines = [
   "At this rate you'll finish that project in... never.",
   "Did you commit? You didn't commit. COMMIT.",
   "I've been alive on your desktop for hours and you haven't named me yet.",
+  "Is that... another tab? Seriously?",
+  "I bet you have 40+ tabs open. I can smell the RAM burning.",
+  "You're doing great. For a human. 🐾",
 ];
 
 export const judgingLines = [
@@ -38,6 +43,8 @@ export const judgingLines = [
   "Twitter will survive without your takes.",
   "YouTube Shorts? At this hour?",
   "Every reel you watch is a piece of your life you don't get back. Just saying.",
+  "Stop scrolling. Your brain is melting. 🧠",
+  "I've seen smarter behavior from a laser pointer.",
 ];
 
 export const typingFastLines = [
@@ -47,6 +54,8 @@ export const typingFastLines = [
   "LETS GOOO",
   "okay you're actually built different rn",
   "the grindset is real today",
+  "Look at those WPM! Are you even human?!",
+  "Keyboard is crying, but I'm loving the energy!",
 ];
 
 export const wakeUpLines = [
@@ -55,6 +64,7 @@ export const wakeUpLines = [
   "Don't wake me up and then go away again.",
   "*yawns aggressively*",
   "mrrph... five more minutes...",
+  "The sunlight... it burns... oh wait, it's just your monitor.",
 ];
 
 export const excitedLines = [
@@ -63,6 +73,8 @@ export const excitedLines = [
   "TOO MUCH STIMULATION",
   "nyaa~!! >///<",
   "I'M NORMAL I'M FINE",
+  "Stop clicking me! I'm not a toy! (Actually, keep going.)",
+  "ENERGY!!! I have too much energy now!",
 ];
 
 export const batteryLines = [
@@ -70,6 +82,7 @@ export const batteryLines = [
   "If I die it's your fault just so you know.",
   "15% and you still haven't plugged in. Impressive irresponsibility.",
   "we are DYING. together. because of YOU.",
+  "I'm seeing spots. Is it the battery or is it you?",
 ];
 
 export const lateNightLines = [
@@ -78,4 +91,35 @@ export const lateNightLines = [
   "The 2AM grind. Classic. Questionable. But classic.",
   "go to sleep. I'll still be here tomorrow. promise. 🐾",
   "Your sleep schedule is a crime scene.",
+  "Dark mode is on, but your brain should be OFF.",
+  "Even the internet is sleeping. Why aren't you?",
+];
+
+export const draggingLines = [
+  "Hey! Where are we going?!",
+  "Put me down! I have a very busy schedule of doing nothing!",
+  "Wheeeee! ...I mean, UNHAND ME!",
+  "Is this a kidnapping? I'm calling the paw-lice.",
+  "Watch the fur! It's self-cleaning but still!",
+];
+
+export const shakeLines = [
+  "I... think... I'm... gonna... be... sick... 🤢",
+  "STOP SHAKING ME!!!",
+  "Everything is spinning... is the world ending?",
+  "You're doing this on purpose, aren't you?",
+];
+
+export const annoyedLines = [
+  "Stop. It. 😾",
+  "Do you have a clicking problem? Seek help.",
+  "I'm this close to biting you. This close.",
+  "My patience is thinner than your laptop.",
+];
+
+export const curiousLines = [
+  "What's that? Can I eat it?",
+  "Is that a bug or a feature? Looks like a bug.",
+  "Ooh, shiny. Wait, it's just a cursor.",
+  "Whatcha doin'? Looks boring. Let's do something else.",
 ];
