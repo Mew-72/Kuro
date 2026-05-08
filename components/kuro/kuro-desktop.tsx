@@ -121,7 +121,18 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const [mounted, setMounted] = useState(false);
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const dragInfo = useRef({ active: false, offX: 0, offY: 0, moved: false });
+  const dragInfo = useRef({
+    active: false,
+    offX: 0,
+    offY: 0,
+    // Screen-space drag tracking (for Tauri window movement)
+    screenStartX: 0,
+    screenStartY: 0,
+    windowStartX: 0,
+    windowStartY: 0,
+    moved: false,
+  });
+  const lastClickTimeRef = useRef(0);
 
   // Wandering refs
   const wanderTRef = useRef(0);
@@ -139,8 +150,16 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const lastPosRef = useRef({ x: 0, y: 0 });
   const velocityRef = useRef(0);
   const currentAbsolutePosRef = useRef({
-    x: typeof window !== "undefined" ? window.innerWidth - CANVAS_W - 24 : 0,
-    y: typeof window !== "undefined" ? window.innerHeight - CANVAS_H - 24 : 0,
+    x: typeof window !== "undefined"
+      ? ("__TAURI_INTERNALS__" in window
+          ? window.screen.availWidth - CANVAS_W - 24
+          : window.innerWidth - CANVAS_W - 24)
+      : 0,
+    y: typeof window !== "undefined"
+      ? ("__TAURI_INTERNALS__" in window
+          ? window.screen.availHeight - CANVAS_H - 24
+          : window.innerHeight - CANVAS_H - 24)
+      : 0,
   });
 
   const settingsRef = useRef(settings);
@@ -322,61 +341,121 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
   // Initial Mount & Resize bounds
   useEffect(() => {
-    const initX = window.innerWidth - CANVAS_W - 24;
-    const initY = window.innerHeight - CANVAS_H - 24;
-    setPos({ x: initX, y: initY });
-    targetPosRef.current = { x: initX, y: initY };
+    const isTauri = "__TAURI_INTERNALS__" in window;
+
+    if (isTauri) {
+      const screenW = window.screen.availWidth;
+      const screenH = window.screen.availHeight;
+      const initX = screenW - CANVAS_W - 24;
+      const initY = screenH - CANVAS_H - 24;
+      currentAbsolutePosRef.current = { x: initX, y: initY };
+      targetPosRef.current = { x: initX, y: initY };
+      moveWindow(initX, initY);
+      setPos({ x: 0, y: 0 });
+    } else {
+      const initX = window.innerWidth - CANVAS_W - 24;
+      const initY = window.innerHeight - CANVAS_H - 24;
+      setPos({ x: initX, y: initY });
+      currentAbsolutePosRef.current = { x: initX, y: initY };
+      targetPosRef.current = { x: initX, y: initY };
+    }
     setMounted(true);
 
     const onPointerMove = (e: PointerEvent) => {
-      mousePosRef.current = { x: e.clientX, y: e.clientY };
+      mousePosRef.current = { x: e.screenX, y: e.screenY };
 
       if (!dragInfo.current.active) return;
-      const dx = e.clientX - dragInfo.current.offX;
-      const dy = e.clientY - dragInfo.current.offY;
-      const maxX = window.innerWidth - CANVAS_W;
-      const maxY = window.innerHeight - CANVAS_H;
-      const nextX = Math.max(0, Math.min(dx, maxX));
-      const nextY = Math.max(-200, Math.min(dy, maxY));
 
-      // Shake detection
-      const dist = Math.hypot(
-        nextX - lastPosRef.current.x,
-        nextY - lastPosRef.current.y,
-      );
-      velocityRef.current = dist;
-      if (dist > 80 && stateRef.current !== "excited") {
-        triggerState(
-          "excited",
-          shakeLines[Math.floor(Math.random() * shakeLines.length)],
+      if (isTauri) {
+        const screenW = window.screen.availWidth;
+        const screenH = window.screen.availHeight;
+        const maxX = screenW - CANVAS_W;
+        const maxY = screenH - CANVAS_H;
+        const nextX = Math.max(0, Math.min(
+          dragInfo.current.windowStartX + (e.screenX - dragInfo.current.screenStartX),
+          maxX,
+        ));
+        const nextY = Math.max(0, Math.min(
+          dragInfo.current.windowStartY + (e.screenY - dragInfo.current.screenStartY),
+          maxY,
+        ));
+
+        // Shake detection
+        const dist = Math.hypot(
+          nextX - lastPosRef.current.x,
+          nextY - lastPosRef.current.y,
         );
-      }
-
-      // Drag pickup detection
-      if (!dragInfo.current.moved) {
-        if (Math.random() < 0.3) {
+        velocityRef.current = dist;
+        if (dist > 80 && stateRef.current !== "excited") {
           triggerState(
-            "idle",
-            draggingLines[Math.floor(Math.random() * draggingLines.length)],
+            "excited",
+            shakeLines[Math.floor(Math.random() * shakeLines.length)],
           );
         }
-      }
 
-      // Edge bump detection
-      if (
-        (nextX <= 0 || nextX >= maxX || nextY <= -200 || nextY >= maxY) &&
-        !dragInfo.current.moved
-      ) {
-        if (Math.random() < 0.1) {
-          triggerState("judging", "Watch the walls! 😾");
+        // Drag pickup detection
+        if (!dragInfo.current.moved) {
+          if (Math.random() < 0.3) {
+            triggerState(
+              "idle",
+              draggingLines[Math.floor(Math.random() * draggingLines.length)],
+            );
+          }
         }
-      }
 
-      lastPosRef.current = { x: nextX, y: nextY };
-      currentAbsolutePosRef.current = { x: nextX, y: nextY };
-      dragInfo.current.moved = true;
-      setPos({ x: nextX, y: nextY });
-      targetPosRef.current = { x: nextX, y: nextY };
+        lastPosRef.current = { x: nextX, y: nextY };
+        currentAbsolutePosRef.current = { x: nextX, y: nextY };
+        targetPosRef.current = { x: nextX, y: nextY };
+        dragInfo.current.moved = true;
+        moveWindow(nextX, nextY);
+      } else {
+        // Browser: drag moves the cat within the viewport.
+        const dx = e.clientX - dragInfo.current.offX;
+        const dy = e.clientY - dragInfo.current.offY;
+        const maxX = window.innerWidth - CANVAS_W;
+        const maxY = window.innerHeight - CANVAS_H;
+        const nextX = Math.max(0, Math.min(dx, maxX));
+        const nextY = Math.max(-200, Math.min(dy, maxY));
+
+        // Shake detection
+        const dist = Math.hypot(
+          nextX - lastPosRef.current.x,
+          nextY - lastPosRef.current.y,
+        );
+        velocityRef.current = dist;
+        if (dist > 80 && stateRef.current !== "excited") {
+          triggerState(
+            "excited",
+            shakeLines[Math.floor(Math.random() * shakeLines.length)],
+          );
+        }
+
+        // Drag pickup detection
+        if (!dragInfo.current.moved) {
+          if (Math.random() < 0.3) {
+            triggerState(
+              "idle",
+              draggingLines[Math.floor(Math.random() * draggingLines.length)],
+            );
+          }
+        }
+
+        // Edge bump detection
+        if (
+          (nextX <= 0 || nextX >= maxX || nextY <= -200 || nextY >= maxY) &&
+          !dragInfo.current.moved
+        ) {
+          if (Math.random() < 0.1) {
+            triggerState("judging", "Watch the walls!");
+          }
+        }
+
+        lastPosRef.current = { x: nextX, y: nextY };
+        currentAbsolutePosRef.current = { x: nextX, y: nextY };
+        dragInfo.current.moved = true;
+        setPos({ x: nextX, y: nextY });
+        targetPosRef.current = { x: nextX, y: nextY };
+      }
 
       // Stop wandering if dragged
       if (stateRef.current === "wandering") {
@@ -419,16 +498,20 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
       if (nextState) {
         e.preventDefault();
 
+        // When leaving wandering/sleeping, return to home position.
         if (
           (stateRef.current === "wandering" ||
             stateRef.current === "sleeping") &&
           nextState !== "wandering" &&
           nextState !== "sleeping"
         ) {
-          targetPosRef.current = {
-            x: window.innerWidth - CANVAS_W - 24,
-            y: window.innerHeight - CANVAS_H - 24,
-          };
+          const homeX = isTauri
+            ? window.screen.availWidth - CANVAS_W - 24
+            : window.innerWidth - CANVAS_W - 24;
+          const homeY = isTauri
+            ? window.screen.availHeight - CANVAS_H - 24
+            : window.innerHeight - CANVAS_H - 24;
+          targetPosRef.current = { x: homeX, y: homeY };
         }
 
         triggerState(nextState);
@@ -450,6 +533,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     e.stopPropagation();
     e.preventDefault();
 
+    const isTauri = "__TAURI_INTERNALS__" in window;
+
     // Right-click → judging + open settings.
     if (e.button === 2) {
       triggerState("judging");
@@ -459,17 +544,30 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
     // Left-click → headpat / excited (double).
     if (e.button === 0) {
-      if (e.detail >= 2) {
+      // Manual double-click detection (e.detail is unreliable after
+      // preventDefault on pointerdown in some browsers / Tauri webview).
+      const now = Date.now();
+      if (now - lastClickTimeRef.current < 350) {
         triggerState("excited");
       } else {
         triggerState("headpat");
       }
+      lastClickTimeRef.current = now;
 
       // Begin dragging.
       dragInfo.current.active = true;
       dragInfo.current.moved = false;
-      dragInfo.current.offX = e.clientX - pos.x;
-      dragInfo.current.offY = e.clientY - pos.y;
+
+      if (isTauri) {
+        // Track screen-space start for window dragging.
+        dragInfo.current.screenStartX = e.screenX;
+        dragInfo.current.screenStartY = e.screenY;
+        dragInfo.current.windowStartX = currentAbsolutePosRef.current.x;
+        dragInfo.current.windowStartY = currentAbsolutePosRef.current.y;
+      } else {
+        dragInfo.current.offX = e.clientX - pos.x;
+        dragInfo.current.offY = e.clientY - pos.y;
+      }
       setIsDragging(true);
 
       // Click spam detection
@@ -788,8 +886,8 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
                 jumpY = Math.abs(Math.sin(walkCycle)) * -8;
 
                 const center = {
-                  x: pos.x + CANVAS_W / 2,
-                  y: pos.y + CANVAS_H / 2,
+                  x: currentAbsolutePosRef.current.x + CANVAS_W / 2,
+                  y: currentAbsolutePosRef.current.y + CANVAS_H / 2,
                 };
                 const mPos = mousePosRef.current;
                 const dist = Math.hypot(mPos.x - center.x, mPos.y - center.y);
@@ -833,10 +931,9 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           }
 
           // Position handling
-          // - Wandering in Tauri: cat stays fixed inside the window at (0,0);
-          //   only the OS window moves via moveWindow().
-          // - Wandering in Browser: cat moves inside the page normally.
-          // - Otherwise: lerp toward target / honor drag position.
+          // - Tauri (ALL states): cat is always at (0,0) inside the window;
+          //   the OS window moves via moveWindow() to position on screen.
+          // - Browser: cat moves inside the page via CSS transform.
           const isTauri = "__TAURI_INTERNALS__" in window;
 
           if (!dragInfo.current.active) {
@@ -854,28 +951,20 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
             currentAbsolutePosRef.current = { x: nextX, y: nextYBase };
 
-            if (isTauri && s === "wandering") {
-              // Move OS window; keep cat fixed inside its own window.
-              moveWindow(nextX, nextYBase + jumpY);
-              setPos({ x: 0, y: 0 });
+            if (isTauri) {
+              // Move the OS window; cat stays at (0,0) inside it.
+              moveWindow(Math.round(nextX), Math.round(nextYBase + jumpY));
             } else {
               setPos({ x: nextX, y: nextYBase + jumpY });
             }
-          } else {
-            // Dragging
-            if (isTauri && s === "wandering") {
-              moveWindow(
-                targetPosRef.current.x,
-                targetPosRef.current.y + jumpY,
-              );
-              setPos({ x: 0, y: 0 });
-            } else {
-              setPos({
-                x: currentAbsolutePosRef.current.x,
-                y: targetPosRef.current.y + jumpY,
-              });
-            }
+          } else if (!isTauri) {
+            // Browser-only: update CSS position while dragging.
+            setPos({
+              x: currentAbsolutePosRef.current.x,
+              y: targetPosRef.current.y + jumpY,
+            });
           }
+          // Tauri drag is handled in onPointerMove via moveWindow().
         });
 
         setReady(true);
