@@ -11,9 +11,9 @@ pub struct SystemHealth {
 }
 
 pub fn refresh_health(sys: &mut System) -> SystemHealth {
-    sys.refresh_cpu_all();
+    sys.refresh_cpu_usage();
     sys.refresh_memory();
-    let cpu = sys.global_cpu_usage();
+    let cpu = sys.global_cpu_info().cpu_usage();
     let ram = if sys.total_memory() > 0 {
         (sys.used_memory() as f32 / sys.total_memory() as f32) * 100.0
     } else { 0.0 };

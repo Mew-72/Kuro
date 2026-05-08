@@ -123,9 +123,9 @@ pub fn poll_active_window() -> Option<ActiveWindowInfo> {
     match active_win_pos_rs::get_active_window() {
         Ok(win) => Some(ActiveWindowInfo {
             title: win.title.clone(),
-            exe_name: win.process_path
-                .rsplit(['\\', '/'])
-                .next()
+            exe_name: std::path::Path::new(&win.process_path)
+                .file_name()
+                .and_then(|f| f.to_str())
                 .unwrap_or("")
                 .to_string(),
             app_name: win.app_name.clone(),

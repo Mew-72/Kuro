@@ -96,7 +96,7 @@ pub fn run() {
 
                 let mut sys = sysinfo::System::new_all();
                 // Initial CPU refresh (first call always returns 0)
-                sys.refresh_cpu_all();
+                sys.refresh_cpu_usage();
                 std::thread::sleep(Duration::from_millis(200));
 
                 let mut idle_tracker = IdleTracker::new();
