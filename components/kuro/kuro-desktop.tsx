@@ -22,7 +22,58 @@ import {
   shakeLines,
   annoyedLines,
   curiousLines,
+  returnLines,
+  firstLaunchLines,
+  anniversaryLines,
+  headpatMilestoneLines,
+  peakWpmLines,
+  streakLines,
+  systemLines,
+  distractedMajorityLines,
 } from "../lines";
+
+// --- KuroContext from backend ---
+interface KuroContext {
+  user_name: string;
+  device_name: string;
+  days_since_first_met: number;
+  current_app: string;
+  current_window_title: string;
+  activity_type: string;
+  current_wpm: number;
+  peak_wpm_today: number;
+  session_coding_minutes: number;
+  session_distracted_minutes: number;
+  session_idle_minutes: number;
+  focus_streak_minutes: number;
+  longest_streak_today: number;
+  battery_percent: number;
+  is_charging: boolean;
+  cpu_percent: number;
+  ram_percent: number;
+  open_window_count: number;
+  hour: number;
+  is_weekend: boolean;
+  time_of_day: string;
+  total_days_active: number;
+  total_coding_hours: number;
+  total_headpats: number;
+}
+
+function pickRandom(arr: string[]): string {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function personalise(line: string, ctx: KuroContext | null): string {
+  if (!ctx) return line;
+  return line
+    .replace(/\{name\}/g, ctx.user_name)
+    .replace(/\{device\}/g, ctx.device_name)
+    .replace(/\{app\}/g, ctx.current_app)
+    .replace(/\{streak\}/g, String(ctx.focus_streak_minutes))
+    .replace(/\{wpm\}/g, String(ctx.current_wpm))
+    .replace(/\{headpats\}/g, String(ctx.total_headpats));
+}
 
 // --- Types ---
 export type KuroState =
@@ -114,6 +165,11 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
   const [currentDialogue, setCurrentDialogue] = useState<string | null>(null);
   const [isHovering, setIsHovering] = useState(false);
 
+  // Backend context
+  const contextRef = useRef<KuroContext | null>(null);
+  const lastDialogueTimeRef = useRef(0);
+  const dialogueCooldownMs = 180_000; // 3 minutes between random lines
+
   const appRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
 
@@ -184,24 +240,18 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
 
     // Handle immediate explicit dialogues
     if (settingsRef.current.dialogue) {
+      const ctx = contextRef.current;
+      const p = (line: string) => personalise(line, ctx);
       if (customLine) {
-        setCurrentDialogue(customLine);
+        setCurrentDialogue(p(customLine));
       } else if (next === "judging") {
-        setCurrentDialogue(
-          judgingLines[Math.floor(Math.random() * judgingLines.length)],
-        );
+        setCurrentDialogue(p(pickRandom(judgingLines)));
       } else if (next === "headpat") {
-        setCurrentDialogue(
-          headpatLines[Math.floor(Math.random() * headpatLines.length)],
-        );
+        setCurrentDialogue(p(pickRandom(headpatLines)));
       } else if (next === "excited") {
-        setCurrentDialogue(
-          excitedLines[Math.floor(Math.random() * excitedLines.length)],
-        );
+        setCurrentDialogue(p(pickRandom(excitedLines)));
       } else if (next === "idle" && prevState === "sleeping") {
-        setCurrentDialogue(
-          wakeUpLines[Math.floor(Math.random() * wakeUpLines.length)],
-        );
+        setCurrentDialogue(p(pickRandom(wakeUpLines)));
       }
       if (
         ["judging", "headpat", "excited", "idle"].includes(next) ||
@@ -217,39 +267,73 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
     getState: () => stateRef.current,
   }));
 
-  // Dialogue Interval
+  // Context-aware Dialogue System
   useEffect(() => {
     if (!settings.dialogue) {
       setCurrentDialogue(null);
       return;
     }
     const interval = setInterval(() => {
-      const linesMap: Partial<Record<KuroState, string[]>> = {
-        idle: idleLines,
-        judging: judgingLines,
-        headpat: headpatLines,
-        typing_fast: typingFastLines,
-        excited: excitedLines,
-        wandering: idleLines,
-      };
-      let lines = linesMap[stateRef.current] || [];
+      const now = Date.now();
+      if (now - lastDialogueTimeRef.current < dialogueCooldownMs) return;
 
-      if (settings.lateNightMode && stateRef.current === "idle") {
-        const hour = new Date().getHours();
-        if (hour >= 0 && hour < 5) {
-          lines = lateNightLines;
+      const ctx = contextRef.current;
+      const p = (line: string) => personalise(line, ctx);
+      let chosen: string | null = null;
+
+      // Priority-based dialogue selection
+      if (ctx) {
+        // P1: Battery critical
+        if (!ctx.is_charging && ctx.battery_percent < 5) {
+          chosen = p(pickRandom(batteryLines));
+        }
+        // P2: Battery low
+        else if (!ctx.is_charging && ctx.battery_percent < 15) {
+          chosen = p(pickRandom(batteryLines));
+        }
+        // P3: CPU high
+        else if (ctx.cpu_percent > 90) {
+          chosen = p(pickRandom(systemLines.slice(0, 2)));
+        }
+        // P4: RAM high
+        else if (ctx.ram_percent > 85) {
+          chosen = p(pickRandom(systemLines.slice(2, 4)));
+        }
+        // P5: Distracted activity
+        else if (ctx.activity_type === "distracted" && stateRef.current !== "judging") {
+          triggerState("judging");
+          return; // triggerState handles its own dialogue
+        }
+        // P8: Late night + long session
+        else if (settings.lateNightMode && (ctx.hour >= 0 && ctx.hour < 5) && ctx.session_coding_minutes > 30) {
+          chosen = p(pickRandom(lateNightLines));
         }
       }
 
-      if (lines.length > 0) {
-        const line = lines[Math.floor(Math.random() * lines.length)];
-        setCurrentDialogue(line);
-        setTimeout(() => setCurrentDialogue(null), 3000);
+      // P10: Random idle chatter (fallback)
+      if (!chosen) {
+        const linesMap: Partial<Record<KuroState, string[]>> = {
+          idle: idleLines,
+          judging: judgingLines,
+          typing_fast: typingFastLines,
+          wandering: idleLines,
+        };
+        const lines = linesMap[stateRef.current] || [];
+        // Weighted toward silence — 60% chance of saying nothing
+        if (lines.length > 0 && Math.random() > 0.6) {
+          chosen = p(pickRandom(lines));
+        }
+      }
+
+      if (chosen) {
+        lastDialogueTimeRef.current = now;
+        setCurrentDialogue(chosen);
+        setTimeout(() => setCurrentDialogue(null), 4000);
       }
     }, settings.dialogueInterval * 1000);
 
     return () => clearInterval(interval);
-  }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode]);
+  }, [settings.dialogue, settings.dialogueInterval, settings.lateNightMode, triggerState]);
 
   // ---- Click-through control (Tauri) ----
   //
@@ -297,38 +381,86 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
           }),
         );
 
+        // Context event — full state from backend every 3s
+        unlisten.push(
+          await listen<KuroContext>("kuro:context", (e) => {
+            contextRef.current = e.payload;
+          }),
+        );
+
+        // Typing speed — drives animation state
         unlisten.push(
           await listen<{ wpm: number }>("kuro:typing-speed", (e) => {
-            if (e.payload.wpm === 0) triggerState("idle");
-            else if (e.payload.wpm < 40) triggerState("typing_slow");
-            else triggerState("typing_fast");
+            const wpm = e.payload.wpm;
+            const cur = stateRef.current;
+            // Don't override special states
+            if (["headpat", "excited", "judging", "sleeping", "wandering"].includes(cur)) return;
+            if (wpm === 0) triggerState("idle");
+            else if (wpm < 40) triggerState("typing_slow");
+            else if (wpm < 80) triggerState("typing_fast");
+            else triggerState("excited"); // typing_frantic → use excited anim
           }),
         );
 
+        // Active window — trigger judging for distracted activity
         unlisten.push(
-          await listen<{ percent: number }>("kuro:battery", (e) => {
-            if (e.payload.percent <= 15) triggerState("judging");
-          }),
-        );
-
-        unlisten.push(
-          await listen<{ title: string }>("kuro:active-window", (e) => {
-            const title = e.payload.title.toLowerCase();
-            const distractors = [
-              "twitter",
-              "youtube",
-              "instagram",
-              "reddit",
-              "netflix",
-            ];
-            if (distractors.some((d) => title.includes(d))) {
+          await listen<{ title: string; activity: string }>("kuro:active-window", (e) => {
+            if (e.payload.activity === "distracted") {
               triggerState("judging");
             }
           }),
         );
 
+        // Idle events
         unlisten.push(
-          await listen("kuro:idle", () => triggerState("sleeping")),
+          await listen<{ type: string; seconds?: number; was_gone_minutes?: number }>("kuro:idle", (e) => {
+            const ctx = contextRef.current;
+            const p = (line: string) => personalise(line, ctx);
+            if (e.payload.type === "Sleeping") {
+              triggerState("sleeping");
+            } else if (e.payload.type === "Wandering") {
+              if (settingsRef.current.wandering) triggerState("wandering");
+            } else if (e.payload.type === "Returned") {
+              triggerState("idle", p(pickRandom(returnLines)));
+            }
+          }),
+        );
+
+        // System health alerts
+        unlisten.push(
+          await listen<{ alert_type: string; value: number }>("kuro:system-health", (e) => {
+            const ctx = contextRef.current;
+            const p = (line: string) => personalise(line, ctx);
+            if (e.payload.alert_type === "battery_critical") {
+              triggerState("judging", p(pickRandom(batteryLines)));
+            } else if (e.payload.alert_type === "battery_low") {
+              triggerState("judging", p(pickRandom(batteryLines)));
+            } else if (e.payload.alert_type === "cpu_high") {
+              triggerState("idle", p(pickRandom(systemLines.slice(0, 2))));
+            } else if (e.payload.alert_type === "ram_high") {
+              triggerState("idle", p(pickRandom(systemLines.slice(2, 4))));
+            }
+          }),
+        );
+
+        // Milestone events
+        unlisten.push(
+          await listen<{ milestone_type: string; value?: number }>("kuro:milestone", (e) => {
+            const ctx = contextRef.current;
+            const p = (line: string) => personalise(line, ctx);
+            const mt = e.payload.milestone_type;
+            if (mt === "focus_25") {
+              triggerState("idle", p(streakLines[0]));
+            } else if (mt === "focus_60") {
+              triggerState("idle", p(streakLines[1]));
+            } else if (mt === "focus_120") {
+              triggerState("excited", p(streakLines[2]));
+            } else if (mt === "new_peak_wpm") {
+              triggerState("excited", p(pickRandom(peakWpmLines)));
+            } else if (mt === "distracted_majority") {
+              triggerState("judging", p(pickRandom(distractedMajorityLines)));
+            }
+          }),
         );
       } catch (e) {
         console.debug("[Kuro] Tauri events unavailable:", e);
@@ -551,6 +683,19 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
         triggerState("excited");
       } else {
         triggerState("headpat");
+        // Record headpat in backend
+        if ("__TAURI_INTERNALS__" in window) {
+          import("@tauri-apps/api/core").then(({ invoke }) => {
+            invoke<number>("record_headpat").then((count) => {
+              const ctx = contextRef.current;
+              const p = (line: string) => personalise(line, ctx);
+              if (count === 10) triggerState("idle", p(headpatMilestoneLines[0]));
+              else if (count === 50) triggerState("idle", p(headpatMilestoneLines[1]));
+              else if (count === 100) triggerState("excited", p(headpatMilestoneLines[2]));
+              else if (count === 500) triggerState("excited", p(headpatMilestoneLines[3]));
+            }).catch(() => {});
+          }).catch(() => {});
+        }
       }
       lastClickTimeRef.current = now;
 
@@ -1004,7 +1149,7 @@ const KuroDesktop = forwardRef<KuroDesktopHandle, {}>((_, ref) => {
         width: `${CANVAS_W}px`,
         height: `${CANVAS_H}px`,
         transform: `translate3d(${pos.x}px, ${pos.y}px, 0) scale(${settings.scale})`,
-        transformOrigin: "center center",
+        transformOrigin: "bottom center",
         opacity: !mounted
           ? 0
           : state === "sleeping"

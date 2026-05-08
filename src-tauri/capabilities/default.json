@@ -15,6 +15,12 @@
     "core:window:allow-hide",
     "core:window:allow-outer-position",
     "core:window:allow-inner-size",
-    "core:window:allow-cursor-position"
+    "core:window:allow-cursor-position",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "store:allow-load",
+    "store:allow-get",
+    "store:allow-set",
+    "store:allow-save"
   ]
 }

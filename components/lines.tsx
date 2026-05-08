@@ -123,3 +123,58 @@ export const curiousLines = [
   "Ooh, shiny. Wait, it's just a cursor.",
   "Whatcha doin'? Looks boring. Let's do something else.",
 ];
+
+// --- Context-aware lines (support {name}, {device}, {app}, {streak}, {wpm}, {headpats} tokens) ---
+
+export const returnLines = [
+  "oh. you're back, {name}.",
+  "I was starting to think you abandoned me.",
+  "took you long enough.",
+  "I wasn't waiting. I was just... standing here.",
+  "welcome back I guess 🐾",
+];
+
+export const firstLaunchLines = [
+  "oh. a new computer. hi.",
+  "I'm Kuro. I live here now. deal with it.",
+  "so this is {device}. interesting.",
+];
+
+export const anniversaryLines = [
+  "we've been together for a week, {name}. don't make it weird.",
+  "30 days. I've seen things. I'm not the same cat I was.",
+  "100 days with you. I have... feelings about this. don't ask.",
+];
+
+export const headpatMilestoneLines = [
+  "you've pet me 10 times. I'm keeping count. just so you know.",
+  "50 headpats. you really like doing that huh, {name}.",
+  "100. one hundred headpats. I have mixed feelings about this.",
+  "500 headpats. at this point it's a lifestyle.",
+];
+
+export const peakWpmLines = [
+  "{wpm} WPM?? {name} who are you right now",
+  "new personal best. {wpm} WPM. I'm genuinely impressed.",
+  "okay {wpm} WPM. the grindset is real.",
+];
+
+export const streakLines = [
+  "25 minutes straight, {name}. take a water break. I'll still be here.",
+  "an hour of focus. I am selecting you. you're one of the good ones.",
+  "TWO HOURS. {name}. I'm proud and also concerned. are you okay.",
+];
+
+export const systemLines = [
+  "what are you compiling... this fan sounds like it wants to leave.",
+  "{device} is struggling. what did you do.",
+  "close some tabs, {name}. I'm begging.",
+  "you have {app} open AND 47 browser tabs. pick a struggle.",
+  "how do you live like this.",
+  "this is too many windows. this is a cry for help.",
+];
+
+export const distractedMajorityLines = [
+  "you've spent more time distracted than coding today, {name}. just... noting.",
+  "the distraction-to-work ratio is concerning. I have a graph.",
+];
