@@ -40,18 +40,8 @@ export default function RootLayout({
       </head>
       <body className="font-sans antialiased">
         {children}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-            document.addEventListener('contextmenu', (e) => {
-              if (e.target.tagName !== 'CANVAS') {
-                e.preventDefault()
-              }
-            })
-          `,
-          }}
-        />
         {process.env.NODE_ENV === "production" && <Analytics />}
+
       </body>
     </html>
   );
