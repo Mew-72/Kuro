@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
@@ -15,9 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kuro — Desktop Companion",
-  description: "A Live2D desktop companion that lives on your screen.",
-  generator: "v0.app",
+  title: "KURO",
+  description: "A 3D desktop companion that lives on your screen.",
 };
 
 export const viewport: Viewport = {
@@ -32,16 +30,14 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Note: the Cubism 4 core script that lived here in v0 has been removed
+  // along with the rest of the Live2D pipeline. V1 renders a VRM via
+  // three.js + @pixiv/three-vrm; no global script tag is needed.
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <head>
-        {/* Cubism 4 core must load before pixi-live2d-display tries to instantiate models. */}
-        <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js" />
-      </head>
       <body className="font-sans antialiased">
         {children}
         {process.env.NODE_ENV === "production" && <Analytics />}
-
       </body>
     </html>
   );

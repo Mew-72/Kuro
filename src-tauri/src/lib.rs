@@ -1,21 +1,25 @@
-mod context;
 mod activity;
-mod typing;
-mod idle;
-mod session;
-mod health;
-mod profile;
 mod commands;
+mod context;
+mod episodes;
+mod health;
+mod idle;
+mod mood;
+mod profile;
+mod session;
+mod typing;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use commands::AppState;
-use typing::TypingState;
-use session::SessionTracker;
-use idle::IdleTracker;
+use episodes::{EpisodeTracker, EvaluatorInputs};
 use health::SystemHealth;
+use idle::IdleTracker;
+use mood::MoodVector;
+use session::SessionTracker;
+use typing::TypingState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,7 +29,15 @@ pub fn run() {
             use tauri::Manager;
             let window = app.get_webview_window("main").unwrap();
 
-            // --- Click-through polling (preserved from original) ---
+            // --- Click-through polling thread ---
+            //
+            // V1 simplification: the entire window is the hit-area when the
+            // cursor is inside the window bounds. The dialogue bubble is
+            // drawn outside the window or as a non-interactive layer per
+            // the frontend rules (see .kiro/steering/frontend.md).
+            //
+            // V2 may publish the character bounding box from the frontend
+            // each frame to allow sub-window hit testing.
             window.set_ignore_cursor_events(true)?;
             let poll_window = window.clone();
             std::thread::spawn(move || {
@@ -33,22 +45,20 @@ pub fn run() {
                 loop {
                     std::thread::sleep(Duration::from_millis(50));
                     let pos = match poll_window.outer_position() {
-                        Ok(p) => p, Err(_) => break,
+                        Ok(p) => p,
+                        Err(_) => break,
                     };
                     let size = match poll_window.inner_size() {
-                        Ok(s) => s, Err(_) => break,
+                        Ok(s) => s,
+                        Err(_) => break,
                     };
                     let cursor = match poll_window.cursor_position() {
-                        Ok(c) => c, Err(_) => continue,
+                        Ok(c) => c,
+                        Err(_) => continue,
                     };
-                    // The top ~250px of the window is reserved for the dialogue bubble
-                    // and should remain click-through so it doesn't block the desktop.
-                    // Only the bottom 250px (where the character is) should be interactive.
-                    let hit_y_offset = if size.height > 250 { (size.height as i32) - 250 } else { 0 };
-                    let hit_pos_y = pos.y + hit_y_offset;
                     let inside = cursor.x >= pos.x as f64
                         && cursor.x <= (pos.x + size.width as i32) as f64
-                        && cursor.y >= hit_pos_y as f64
+                        && cursor.y >= pos.y as f64
                         && cursor.y <= (pos.y + size.height as i32) as f64;
                     if inside != cursor_inside {
                         cursor_inside = inside;
@@ -68,17 +78,21 @@ pub fn run() {
                 session: Mutex::new(SessionTracker::new()),
                 typing: typing_state.clone(),
                 health: Mutex::new(SystemHealth {
-                    cpu_percent: 0.0, ram_percent: 0.0,
-                    battery_percent: 100, is_charging: true,
+                    cpu_percent: 0.0,
+                    ram_percent: 0.0,
+                    battery_percent: 100,
+                    is_charging: true,
                     open_window_count: 0,
                 }),
+                mood: Mutex::new(MoodVector::baseline()),
+                episodes: Mutex::new(EpisodeTracker::new()),
                 current_activity: Mutex::new("unknown".to_string()),
                 current_app: Mutex::new(String::new()),
                 current_title: Mutex::new(String::new()),
+                last_interaction_ms: Mutex::new(now_ms()),
                 app_data_dir: app_data_dir.clone(),
             });
 
-            // Register shared state for Tauri commands
             app.manage(app_state.clone());
 
             // --- Spawn rdev input listener thread ---
@@ -87,7 +101,7 @@ pub fn run() {
                 typing::start_input_listener(typing_for_rdev);
             });
 
-            // --- Spawn main polling/event-emission thread ---
+            // --- Main polling/event-emission thread ---
             let emit_window = window.clone();
             let poll_state = app_state.clone();
             let poll_typing = typing_state.clone();
@@ -95,13 +109,13 @@ pub fn run() {
                 use tauri::Emitter;
 
                 let mut sys = sysinfo::System::new_all();
-                // Initial CPU refresh (first call always returns 0)
                 sys.refresh_cpu_usage();
                 std::thread::sleep(Duration::from_millis(200));
 
                 let mut idle_tracker = IdleTracker::new();
                 let mut last_window_title = String::new();
                 let mut last_date = chrono::Local::now().date_naive();
+                let mut last_emitted_episode: Option<String> = None;
 
                 let mut tick_counter: u64 = 0; // increments every 500ms
 
@@ -111,9 +125,8 @@ pub fn run() {
 
                     // === Every 500ms: poll active window ===
                     if let Some(win_info) = activity::poll_active_window() {
-                        let activity_type = activity::classify_activity(
-                            &win_info.title, &win_info.exe_name,
-                        );
+                        let activity_type =
+                            activity::classify_activity(&win_info.title, &win_info.exe_name);
                         {
                             let mut act = poll_state.current_activity.lock().unwrap();
                             *act = activity_type.to_string();
@@ -122,25 +135,27 @@ pub fn run() {
                             let mut title = poll_state.current_title.lock().unwrap();
                             *title = win_info.title.clone();
                         }
-                        // Emit on change
                         if win_info.title != last_window_title {
                             last_window_title = win_info.title.clone();
-                            let _ = emit_window.emit("kuro:active-window", serde_json::json!({
-                                "title": win_info.title,
-                                "app": win_info.app_name,
-                                "activity": activity_type,
-                            }));
+                            let _ = emit_window.emit(
+                                "kuro:active-window",
+                                serde_json::json!({
+                                    "title": win_info.title,
+                                    "app": win_info.app_name,
+                                    "activity": activity_type,
+                                }),
+                            );
                         }
                     }
 
                     // === Every 2s (tick 4): typing speed ===
                     if tick_counter % 4 == 0 {
                         let wpm = poll_typing.current_wpm.load(Ordering::Relaxed);
-                        let _ = emit_window.emit("kuro:typing-speed", serde_json::json!({
-                            "wpm": wpm,
-                        }));
+                        let _ = emit_window.emit(
+                            "kuro:typing-speed",
+                            serde_json::json!({ "wpm": wpm }),
+                        );
 
-                        // Check for new peak WPM
                         if wpm > 20 {
                             let mut session = poll_state.session.lock().unwrap();
                             if let Some(milestone) = session.update_wpm(wpm) {
@@ -158,19 +173,56 @@ pub fn run() {
                     if tick_counter % 6 == 0 {
                         let ctx = build_context(&poll_state);
                         let _ = emit_window.emit("kuro:context", &ctx);
+
+                        // Emit mood separately for finer-grained subscribers
+                        // (not strictly needed since context carries it, but
+                        // it's a small payload and saves the frontend from
+                        // diffing mood out of context).
+                        let mood = *poll_state.mood.lock().unwrap();
+                        let _ = emit_window.emit(
+                            "kuro:mood",
+                            &mood::MoodSnapshot::from(mood),
+                        );
+
+                        // Episode change detection — keep frontend in sync
+                        // even if a force_start happened off-tick.
+                        let current_name = poll_state
+                            .episodes
+                            .lock()
+                            .unwrap()
+                            .current()
+                            .map(|(n, _, _)| n);
+                        if current_name != last_emitted_episode {
+                            // Note: explicit start/end events are emitted at
+                            // the points they happen (see set_dnd, force_episode,
+                            // and the 60s evaluator below). This block is purely
+                            // a defensive resync — it deliberately does not
+                            // re-emit a start, only logs the divergence in dev.
+                            last_emitted_episode = current_name;
+                        }
                     }
 
-                    // === Every 10s (tick 20): idle detection ===
+                    // === Every 10s (tick 20): idle + mood decay ===
                     if tick_counter % 20 == 0 {
                         let idle_secs = idle::get_idle_seconds(&poll_typing);
                         if let Some(idle_event) = idle_tracker.tick(idle_secs) {
+                            // Mood reaction to user returning
+                            if let idle::IdleEvent::Returned { was_gone_minutes } = &idle_event {
+                                poll_state
+                                    .mood
+                                    .lock()
+                                    .unwrap()
+                                    .on_user_returned(*was_gone_minutes);
+                            }
                             let _ = emit_window.emit("kuro:idle", &idle_event);
                         }
-                        // If idle > 10min, mark activity as idle
                         if idle_secs > 600 {
                             let mut act = poll_state.current_activity.lock().unwrap();
                             *act = "idle".to_string();
                         }
+
+                        // Mood decay — rate is small per 10s tick, accumulates over minutes.
+                        poll_state.mood.lock().unwrap().decay_toward_baseline(0.02);
                     }
 
                     // === Every 30s (tick 60): system health ===
@@ -186,9 +238,26 @@ pub fn run() {
                         }
                     }
 
-                    // === Every 60s (tick 120): session tick + midnight check ===
+                    // === Every 60s (tick 120): session + episode evaluator + midnight ===
                     if tick_counter % 120 == 0 {
                         let activity = poll_state.current_activity.lock().unwrap().clone();
+
+                        // Apply mood deltas for the activity that just elapsed.
+                        {
+                            let mut mood = poll_state.mood.lock().unwrap();
+                            match activity.as_str() {
+                                "coding" | "researching" | "learning" => mood.on_focus_tick(),
+                                "distracted" | "entertainment" => mood.on_distraction_tick(),
+                                "idle" => mood.on_idle_tick(),
+                                _ => {}
+                            }
+                            // Late-night drains energy regardless of activity.
+                            let hr = chrono::Local::now().format("%H").to_string();
+                            if matches!(hr.as_str(), "00" | "01" | "02" | "03" | "04") {
+                                mood.on_late_night_tick();
+                            }
+                        }
+
                         let milestones = {
                             let mut session = poll_state.session.lock().unwrap();
                             session.tick(&activity)
@@ -197,21 +266,60 @@ pub fn run() {
                             let _ = emit_window.emit("kuro:milestone", &m);
                         }
 
+                        // Episode evaluator — feeds a snapshot into the tracker
+                        // and emits any start/end events.
+                        let now_secs = now_ms() / 1000;
+                        let (mood_snap, session_snap) = {
+                            let mood = *poll_state.mood.lock().unwrap();
+                            let session = poll_state.session.lock().unwrap();
+                            (
+                                mood,
+                                (
+                                    session.distracted_minutes(),
+                                    session.coding_minutes(),
+                                ),
+                            )
+                        };
+                        let last_int_secs = {
+                            let last = *poll_state.last_interaction_ms.lock().unwrap();
+                            ((now_ms().saturating_sub(last)) / 1000) as u32
+                        };
+                        let inputs = EvaluatorInputs {
+                            now_unix_seconds: now_secs,
+                            mood: &mood_snap,
+                            current_activity: &activity,
+                            session_distracted_minutes: session_snap.0,
+                            session_coding_minutes: session_snap.1,
+                            minutes_since_last_interaction: last_int_secs / 60,
+                        };
+                        let (end_evt, start_evt) = {
+                            let mut tracker = poll_state.episodes.lock().unwrap();
+                            tracker.tick(&inputs)
+                        };
+                        if let Some(end) = end_evt {
+                            let _ = emit_window.emit("kuro:episode-end", &end);
+                        }
+                        if let Some(start) = start_evt {
+                            let _ = emit_window.emit("kuro:episode-start", &start);
+                        }
+
                         // Midnight check
                         let today = chrono::Local::now().date_naive();
                         if today != last_date {
                             last_date = today;
-                            // Save coding hours and reset session
-                            let mut profile = poll_state.profile.lock().unwrap();
-                            let session = poll_state.session.lock().unwrap();
-                            profile.total_coding_hours += session.coding_minutes() / 60;
-                            if session.longest_streak_minutes() > profile.longest_streak_ever {
-                                profile.longest_streak_ever = session.longest_streak_minutes();
+                            let (coding_min, longest_min) = {
+                                let session = poll_state.session.lock().unwrap();
+                                (session.coding_minutes(), session.longest_streak_minutes())
+                            };
+                            {
+                                let mut profile = poll_state.profile.lock().unwrap();
+                                profile.total_coding_hours += coding_min / 60;
+                                if longest_min > profile.longest_streak_ever {
+                                    profile.longest_streak_ever = longest_min;
+                                }
+                                profile.total_days_active += 1;
+                                profile::save_profile(&poll_state.app_data_dir, &profile);
                             }
-                            profile.total_days_active += 1;
-                            profile::save_profile(&poll_state.app_data_dir, &profile);
-                            drop(profile);
-                            drop(session);
                             poll_state.session.lock().unwrap().reset();
                         }
                     }
@@ -231,29 +339,39 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_context,
             commands::get_profile,
-            commands::record_headpat,
+            commands::record_interaction,
+            commands::force_episode,
+            commands::set_dnd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// Build a KuroContext snapshot from the shared state.
+/// Build a `KuroContext` snapshot from the shared state.
 fn build_context(state: &Arc<AppState>) -> context::KuroContext {
     let profile = state.profile.lock().unwrap();
     let session = state.session.lock().unwrap();
     let health_snap = state.health.lock().unwrap();
+    let mood_snap = *state.mood.lock().unwrap();
+    let episodes = state.episodes.lock().unwrap();
     let activity = state.current_activity.lock().unwrap();
-    let app = state.current_app.lock().unwrap();
+    let app_name = state.current_app.lock().unwrap();
     let title = state.current_title.lock().unwrap();
     let wpm = state.typing.current_wpm.load(Ordering::Relaxed);
     let now = chrono::Local::now();
     use chrono::{Datelike, Timelike};
     let hour = now.hour();
+
+    let (current_episode, episode_started_at) = match episodes.current() {
+        Some((name, started_at, _dur)) => (Some(name), Some(started_at)),
+        None => (None, None),
+    };
+
     context::KuroContext {
         user_name: profile.user_name.clone(),
         device_name: profile.device_name.clone(),
         days_since_first_met: profile::days_since_first_met(&profile),
-        current_app: app.clone(),
+        current_app: app_name.clone(),
         current_window_title: title.clone(),
         activity_type: activity.clone(),
         current_wpm: wpm,
@@ -269,10 +387,21 @@ fn build_context(state: &Arc<AppState>) -> context::KuroContext {
         ram_percent: health_snap.ram_percent,
         open_window_count: health_snap.open_window_count,
         hour,
-        is_weekend: now.weekday() == chrono::Weekday::Sat || now.weekday() == chrono::Weekday::Sun,
+        is_weekend: now.weekday() == chrono::Weekday::Sat
+            || now.weekday() == chrono::Weekday::Sun,
         time_of_day: context::time_of_day(hour).to_string(),
+        mood: mood::MoodSnapshot::from(mood_snap),
+        current_episode,
+        episode_started_at,
         total_days_active: profile.total_days_active,
         total_coding_hours: profile.total_coding_hours,
-        total_headpats: profile.total_headpats,
+        total_interactions: profile.total_interactions,
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

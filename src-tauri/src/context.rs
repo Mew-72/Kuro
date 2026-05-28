@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+use crate::mood::MoodSnapshot;
+
 /// The full context object emitted to frontend every 3 seconds.
+///
+/// V1 adds `mood` and `current_episode` to carry the new emotional model.
+/// Cat-era fields (e.g. `total_headpats`) are gone; if you need a count,
+/// reach for the new `total_interactions` accumulator on the profile.
 #[derive(Serialize, Clone, Debug)]
 pub struct KuroContext {
     // Identity
@@ -39,24 +45,47 @@ pub struct KuroContext {
     /// "morning"|"afternoon"|"evening"|"night"|"late_night"|"dead_hours"
     pub time_of_day: String,
 
+    // V1 emotional model (M3)
+    pub mood: MoodSnapshot,
+    /// Snake-case episode name, or `None` when no episode is active.
+    pub current_episode: Option<String>,
+    /// Unix seconds when the current episode began. `None` when idle.
+    pub episode_started_at: Option<u64>,
+
     // Lifetime stats
     pub total_days_active: u32,
     pub total_coding_hours: u32,
-    pub total_headpats: u32,
+    pub total_interactions: u32,
 }
 
 /// Stored permanently in kuro-profile.json.
+///
+/// Note for migration: any v0 profile on disk is read by `profile::init_profile`
+/// with `serde(default)` semantics — missing fields fill with defaults.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KuroProfile {
     pub user_name: String,
     pub device_name: String,
     pub first_launch: String, // ISO date string "YYYY-MM-DD"
+    #[serde(default = "default_one")]
     pub total_days_active: u32,
+    #[serde(default)]
     pub total_coding_hours: u32,
-    pub total_headpats: u32,
+    /// Counts every direct interaction (click/headpat-equivalent).
+    /// Replaces v0 `total_headpats`.
+    #[serde(default, alias = "total_headpats")]
+    pub total_interactions: u32,
+    #[serde(default)]
     pub favorite_app: String,
+    #[serde(default)]
     pub peak_wpm_ever: u32,
-    pub longest_streak_ever: u32, // in minutes
+    /// In minutes.
+    #[serde(default)]
+    pub longest_streak_ever: u32,
+}
+
+fn default_one() -> u32 {
+    1
 }
 
 /// Map an hour (0–23) to a human-readable time-of-day label.

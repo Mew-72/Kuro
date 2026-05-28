@@ -13,7 +13,12 @@ next.user-config.*
 # Common ignores
 node_modules
 .next/
+out/
 .DS_Store
 
-# User based ignores
-components/kuro/kk.tsx
+# Character binaries (large, model-specific, not committed)
+public/character/*.vrm
+public/character/animations/*.vrma
+
+# v0 cat sandbox file (legacy)
+legacy/cat-v0/components/kuro/kk.tsx

@@ -1,10 +1,13 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
 use crate::context::{KuroContext, KuroProfile};
-use crate::typing::TypingState;
-use crate::session::SessionTracker;
+use crate::episodes::{EpisodeTracker, EpisodeStartEvent, EpisodeEndEvent};
 use crate::health::SystemHealth;
+use crate::mood::{MoodSnapshot, MoodVector};
 use crate::profile;
+use crate::session::SessionTracker;
+use crate::typing::TypingState;
 
 /// Shared application state accessible from Tauri commands.
 pub struct AppState {
@@ -12,9 +15,13 @@ pub struct AppState {
     pub session: Mutex<SessionTracker>,
     pub typing: Arc<TypingState>,
     pub health: Mutex<SystemHealth>,
+    pub mood: Mutex<MoodVector>,
+    pub episodes: Mutex<EpisodeTracker>,
     pub current_activity: Mutex<String>,
     pub current_app: Mutex<String>,
     pub current_title: Mutex<String>,
+    /// Unix milliseconds of the last direct interaction (click/headpat etc.).
+    pub last_interaction_ms: Mutex<u64>,
     pub app_data_dir: std::path::PathBuf,
 }
 
@@ -23,14 +30,22 @@ pub fn get_context(state: tauri::State<'_, Arc<AppState>>) -> KuroContext {
     let profile = state.profile.lock().unwrap();
     let session = state.session.lock().unwrap();
     let health = state.health.lock().unwrap();
+    let mood = state.mood.lock().unwrap();
+    let episodes = state.episodes.lock().unwrap();
     let activity = state.current_activity.lock().unwrap();
     let app = state.current_app.lock().unwrap();
     let title = state.current_title.lock().unwrap();
     let wpm = state.typing.current_wpm.load(Ordering::Relaxed);
     let now = chrono::Local::now();
+    use chrono::{Datelike, Timelike};
     let hour = now.hour();
     let weekday = now.weekday();
-    use chrono::{Datelike, Timelike};
+
+    let (current_episode, episode_started_at) = match episodes.current() {
+        Some((name, started_at, _dur)) => (Some(name), Some(started_at)),
+        None => (None, None),
+    };
+
     KuroContext {
         user_name: profile.user_name.clone(),
         device_name: profile.device_name.clone(),
@@ -53,9 +68,12 @@ pub fn get_context(state: tauri::State<'_, Arc<AppState>>) -> KuroContext {
         hour,
         is_weekend: weekday == chrono::Weekday::Sat || weekday == chrono::Weekday::Sun,
         time_of_day: crate::context::time_of_day(hour).to_string(),
+        mood: MoodSnapshot::from(*mood),
+        current_episode,
+        episode_started_at,
         total_days_active: profile.total_days_active,
         total_coding_hours: profile.total_coding_hours,
-        total_headpats: profile.total_headpats,
+        total_interactions: profile.total_interactions,
     }
 }
 
@@ -64,11 +82,75 @@ pub fn get_profile(state: tauri::State<'_, Arc<AppState>>) -> KuroProfile {
     state.profile.lock().unwrap().clone()
 }
 
+/// Record a direct user→character interaction (click/headpat-equivalent).
+///
+/// V1 surfaces this through a single command. The frontend passes a `kind`
+/// string for future categorisation (`"pet"`, `"hug"`, `"poke"` etc.), but
+/// V1 treats them all as positive interactions.
 #[tauri::command]
-pub fn record_headpat(state: tauri::State<'_, Arc<AppState>>) -> u32 {
+pub fn record_interaction(
+    state: tauri::State<'_, Arc<AppState>>,
+    kind: String,
+) -> u32 {
+    let _ = kind; // V1 doesn't differentiate yet — kind is for future use.
+
     let mut profile = state.profile.lock().unwrap();
-    profile.total_headpats += 1;
-    let count = profile.total_headpats;
+    profile.total_interactions += 1;
+    let count = profile.total_interactions;
     profile::save_profile(&state.app_data_dir, &profile);
+    drop(profile);
+
+    {
+        let mut mood = state.mood.lock().unwrap();
+        mood.on_positive_interaction();
+    }
+    {
+        let mut last = state.last_interaction_ms.lock().unwrap();
+        *last = now_ms();
+    }
     count
+}
+
+/// Force a specific episode to start. Used by the settings debug panel.
+#[tauri::command]
+pub fn force_episode(
+    state: tauri::State<'_, Arc<AppState>>,
+    name: String,
+) -> EpisodeStartEvent {
+    let mut episodes = state.episodes.lock().unwrap();
+    episodes.force_start(&name, now_secs(), Some("debug_force"))
+}
+
+/// Toggle DND mode. Triggers a `withdrawn` episode on enable; ends it on disable.
+/// Frontend listens for `kuro:episode-start` / `kuro:episode-end` to react.
+#[tauri::command]
+pub fn set_dnd(
+    state: tauri::State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Option<EpisodeStartEvent> {
+    let mut episodes = state.episodes.lock().unwrap();
+    let mut mood = state.mood.lock().unwrap();
+    let now = now_secs();
+
+    if enabled {
+        mood.on_dnd_engaged();
+        Some(episodes.force_start("withdrawn", now, Some("dnd_on")))
+    } else {
+        mood.on_dnd_released();
+        // The end event is consumed via the polling thread when emitted; the
+        // frontend will see `kuro:episode-end` for "withdrawn".
+        let _: Option<EpisodeEndEvent> = episodes.force_end(now);
+        None
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn now_secs() -> u64 {
+    now_ms() / 1000
 }
