@@ -99,6 +99,11 @@ struct ActiveEpisode {
 pub struct EvaluatorInputs<'a> {
     pub now_unix_seconds: u64,
     pub mood: &'a MoodVector,
+    /// Current activity classification. Wired through from the polling loop;
+    /// the design-spec triggers for `jealous` (messaging-heavy) and
+    /// activity-aware variants of `pouty`/`huffy` will read it. Not yet
+    /// consumed by `evaluate_triggers`.
+    #[allow(dead_code)]
     pub current_activity: &'a str,
     pub session_distracted_minutes: u32,
     pub session_coding_minutes: u32,
@@ -243,6 +248,10 @@ impl EpisodeTracker {
         })
     }
 
+    /// Snapshot of the in-memory episode history. Will be consumed by
+    /// `KuroProfile` persistence (`episode_history`, see backend.md) so
+    /// cooldowns survive restarts. Not yet called by the persistence path.
+    #[allow(dead_code)]
     pub fn history(&self) -> Vec<EpisodeHistoryEntry> {
         self.history.iter().cloned().collect()
     }

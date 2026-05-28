@@ -10,6 +10,10 @@
  *   - Expression (blendshape weights)
  *   - VRM update (spring bones, look-at, expression apply)
  *   - Renderer draw
+ *
+ * VRM swap: the active model can be replaced via `swapVrm()` without
+ * tearing the ticker or renderer down. Used for hot-reload after the
+ * user installs a new VRM through the settings panel.
  */
 
 import { VRMExpressionPresetName } from "@pixiv/three-vrm";
@@ -56,18 +60,25 @@ export interface TickerInputs {
 export interface TickerHandle {
     start: () => void;
     stop: () => void;
+    /**
+     * Replace the active VRM. The previous one is removed from the scene
+     * and disposed. Animation state (locomotion phase, gaze, expression
+     * weights) carries over so the new model picks up smoothly.
+     */
+    swapVrm: (next: VrmHandle) => void;
 }
 
 export function startTicker(
     bundle: RendererBundle,
-    vrm: VrmHandle,
+    initialVrm: VrmHandle,
     inputs: TickerInputs,
 ): TickerHandle {
     const locomotion: LocomotionState = createLocomotionState();
     const gaze: GazeState = createGazeState();
     const currentExpr: ExpressionTargets = emptyExpressionState();
 
-    bundle.scene.add(vrm.vrm.scene);
+    let activeVrm: VrmHandle = initialVrm;
+    bundle.scene.add(activeVrm.vrm.scene);
 
     let raf = 0;
     let running = false;
@@ -79,7 +90,7 @@ export function startTicker(
         // --- Locomotion ---
         updateLocomotionTarget(locomotion, inputs.episode);
         lerpLocomotion(locomotion, dt);
-        applyLocomotion(vrm.vrm.scene, locomotion);
+        applyLocomotion(activeVrm.vrm.scene, locomotion);
 
         // --- Gaze ---
         updateGazeTarget(gaze, {
@@ -88,17 +99,20 @@ export function startTicker(
             episode: inputs.episode,
         });
         lerpGaze(gaze, 0.15);
-        vrm.setLookAt(gaze.current);
+        activeVrm.setLookAt(gaze.current);
 
         // --- Expression ---
         const exprTarget = targetExpression(inputs.mood, inputs.episode);
         lerpExpression(currentExpr, exprTarget, 0.12);
         for (const key of EXPRESSION_KEYS) {
-            vrm.setExpression(key as VRMExpressionPresetName, currentExpr[key]);
+            activeVrm.setExpression(
+                key as VRMExpressionPresetName,
+                currentExpr[key],
+            );
         }
 
         // --- VRM internal update (spring bones, expression apply, look-at) ---
-        vrm.update(dt);
+        activeVrm.update(dt);
 
         // --- Render ---
         bundle.renderer.render(bundle.scene, bundle.camera);
@@ -116,6 +130,20 @@ export function startTicker(
         stop: () => {
             running = false;
             cancelAnimationFrame(raf);
+        },
+        swapVrm: (next: VrmHandle) => {
+            // Pull the old model out of the scene and dispose it, then
+            // attach the new one. Animation state (locomotion phase, gaze,
+            // expression weights) is preserved on purpose so the new model
+            // doesn't appear with a snap.
+            try {
+                bundle.scene.remove(activeVrm.vrm.scene);
+                activeVrm.dispose();
+            } catch (e) {
+                console.debug("[ticker] dispose old VRM failed:", e);
+            }
+            activeVrm = next;
+            bundle.scene.add(activeVrm.vrm.scene);
         },
     };
 }

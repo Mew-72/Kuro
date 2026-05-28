@@ -1,9 +1,14 @@
 /**
  * VRM loading and rig handle helpers.
  *
- * The chosen model lives at `/character/model.vrm` (see
- * `.kiro/steering/structure.md`). The runtime accepts both VRM 0.x and
- * VRM 1.0 — `@pixiv/three-vrm` 3.x handles either through the same loader.
+ * The model URL is resolved at runtime (see `resolveVrmUrl()`):
+ *   1. If a user-installed VRM exists in the app data directory, that wins.
+ *   2. Otherwise, fall back to a bundled `/character/model.vrm`.
+ *   3. If neither exists, the loader fails and the friendly error overlay
+ *      shows.
+ *
+ * The runtime accepts both VRM 0.x and VRM 1.0 — `@pixiv/three-vrm` 3.x
+ * handles either through the same loader.
  *
  * Rig requirements are enforced by the design spec, not at runtime. If a
  * required blendshape is missing here, we degrade gracefully: expression
@@ -19,8 +24,32 @@ import {
     VRMExpressionPresetName,
 } from "@pixiv/three-vrm";
 
-/** Default model location. Asset itself is not committed to git. */
-export const VRM_MODEL_PATH = "/character/model.vrm";
+import { isTauri } from "./types";
+
+/** Bundled fallback location, used if no installed model exists. */
+export const VRM_BUNDLED_PATH = "/character/model.vrm";
+
+/**
+ * Resolve the URL the renderer should fetch for the VRM file.
+ *
+ * In Tauri: prefer an installed file under the app data dir, served via
+ * the asset protocol. In browser preview: always use the bundled path.
+ */
+export async function resolveVrmUrl(): Promise<string> {
+    if (!isTauri()) return VRM_BUNDLED_PATH;
+    try {
+        const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+        const installed = await invoke<{ path: string } | null>(
+            "get_installed_vrm",
+        );
+        if (installed?.path) {
+            return convertFileSrc(installed.path);
+        }
+    } catch (e) {
+        console.debug("[vrm] resolve installed path failed:", e);
+    }
+    return VRM_BUNDLED_PATH;
+}
 
 export interface VrmHandle {
     vrm: VRM;

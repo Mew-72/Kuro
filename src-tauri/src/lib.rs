@@ -8,6 +8,7 @@ mod mood;
 mod profile;
 mod session;
 mod typing;
+mod vrm_install;
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,7 @@ use typing::TypingState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
             let window = app.get_webview_window("main").unwrap();
@@ -342,6 +344,9 @@ pub fn run() {
             commands::record_interaction,
             commands::force_episode,
             commands::set_dnd,
+            commands::get_installed_vrm,
+            commands::install_vrm_from_path,
+            commands::clear_installed_vrm,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

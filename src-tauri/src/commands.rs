@@ -1,13 +1,16 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use tauri::Emitter;
+
 use crate::context::{KuroContext, KuroProfile};
-use crate::episodes::{EpisodeTracker, EpisodeStartEvent, EpisodeEndEvent};
+use crate::episodes::{EpisodeEndEvent, EpisodeStartEvent, EpisodeTracker};
 use crate::health::SystemHealth;
 use crate::mood::{MoodSnapshot, MoodVector};
 use crate::profile;
 use crate::session::SessionTracker;
 use crate::typing::TypingState;
+use crate::vrm_install::{self, VrmInstalled};
 
 /// Shared application state accessible from Tauri commands.
 pub struct AppState {
@@ -153,4 +156,43 @@ fn now_ms() -> u64 {
 
 fn now_secs() -> u64 {
     now_ms() / 1000
+}
+
+// ---------- VRM model install ----------
+
+/// Returns the currently installed VRM file's metadata, or `null` if none.
+#[tauri::command]
+pub fn get_installed_vrm(state: tauri::State<'_, Arc<AppState>>) -> Option<VrmInstalled> {
+    vrm_install::read_installed(&state.app_data_dir)
+}
+
+/// Install a VRM file by copying from the user-picked path into the app
+/// data dir, then emit `kuro:vrm-installed` so the character window
+/// hot-reloads. The frontend opens the file picker (via the dialog
+/// plugin's JS API) and passes the resulting path here.
+#[tauri::command]
+pub fn install_vrm_from_path(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    source_path: String,
+) -> Result<VrmInstalled, String> {
+    let source = std::path::PathBuf::from(&source_path);
+    let installed = vrm_install::install_from_path(&state.app_data_dir, &source)?;
+    let _ = app.emit("kuro:vrm-installed", &installed);
+    Ok(installed)
+}
+
+/// Remove the installed VRM file (if any) and emit a reload event so the
+/// frontend goes back to the bundled fallback / empty state.
+#[tauri::command]
+pub fn clear_installed_vrm(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let path = vrm_install::installed_vrm_path(&state.app_data_dir);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("remove failed: {e}"))?;
+    }
+    let _ = app.emit("kuro:vrm-cleared", ());
+    Ok(())
 }

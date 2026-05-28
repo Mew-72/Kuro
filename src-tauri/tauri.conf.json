@@ -48,7 +48,14 @@
     ],
     "security": {
       "csp": null,
-      "devCsp": null
+      "devCsp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**/*",
+          "$APPLOCALDATA/**/*"
+        ]
+      }
     }
   },
   "bundle": {

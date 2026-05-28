@@ -107,6 +107,7 @@ KURO/
 | A new Tauri command | `commands.rs`, register in `invoke_handler!` in `lib.rs`, list permission in `capabilities/default.json` if required |
 | A new setting | Settings page UI + `KuroSettings` interface, consumer in `character.tsx` |
 | A new keyboard shortcut | `character.tsx` `onKeyDown` handler |
+| A new asset path served from disk | Update `tauri.conf.json` `assetProtocol.scope` and reach the file via `convertFileSrc()` from `@tauri-apps/api/core` |
 | A V2 capability (later) | New module under `src-tauri/src/capabilities/`, allowlist in settings, personality hook in `episodes.rs` |
 
 ## Files that should NOT be casually edited

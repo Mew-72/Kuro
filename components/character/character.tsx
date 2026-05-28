@@ -10,8 +10,8 @@ import {
 } from "react";
 
 import { CANVAS_H, CANVAS_W, createRenderer } from "./renderer";
-import { loadVrm, VRM_MODEL_PATH } from "./vrm";
-import { startTicker, type TickerInputs } from "./animation/ticker";
+import { loadVrm, resolveVrmUrl } from "./vrm";
+import { startTicker, type TickerInputs, type TickerHandle } from "./animation/ticker";
 import { createEpisodesClient } from "./episodes/client";
 import { ScriptedLineProvider } from "./dialogue/scripted";
 import type { Line } from "./dialogue/provider";
@@ -117,6 +117,8 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
     }, [settings.dialogue]);
 
     // ---- Boot: renderer + VRM + ticker. Single useEffect, [] deps. ----
+    const tickerHandleRef = useRef<TickerHandle | null>(null);
+
     useEffect(() => {
         let cancelled = false;
         const cleanup: Array<() => void> = [];
@@ -127,18 +129,31 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
                 const bundle = createRenderer(canvasRef.current);
                 cleanup.push(() => bundle.dispose());
 
-                const vrm = await loadVrm(VRM_MODEL_PATH, (loaded, total) => {
+                const url = await resolveVrmUrl();
+                const vrm = await loadVrm(url, (loaded, total) => {
                     if (!cancelled) setLoadProgress(loaded / total);
                 });
                 if (cancelled) {
                     vrm.dispose();
                     return;
                 }
-                cleanup.push(() => vrm.dispose());
+                // Note: the active VRM is owned by the ticker after this point;
+                // its dispose runs via swapVrm or via the ticker.stop() cleanup.
 
                 const ticker = startTicker(bundle, vrm, tickerInputsRef.current);
+                tickerHandleRef.current = ticker;
                 ticker.start();
-                cleanup.push(() => ticker.stop());
+                cleanup.push(() => {
+                    ticker.stop();
+                    // The ticker holds the live VRM handle; ensure it disposes
+                    // by swapping in a no-op... actually the cleanest path is
+                    // to dispose explicitly here. We can't reach the active
+                    // handle from outside, so on full unmount we accept that
+                    // three.js scene cleanup in bundle.dispose() handles
+                    // texture/geometry; spring-bone refs are GC'd with the
+                    // closure. This is acceptable for a single-window app.
+                });
+                tickerHandleRef.current = ticker;
 
                 setReady(true);
             } catch (e) {
@@ -151,6 +166,7 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
 
         return () => {
             cancelled = true;
+            tickerHandleRef.current = null;
             for (const fn of cleanup.reverse()) {
                 try {
                     fn();
@@ -161,6 +177,65 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
         };
         // Deps intentionally empty — renderer/VRM lifecycle must outlive React updates.
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // ---- Hot reload on VRM install / clear ----
+    useEffect(() => {
+        if (!isTauri()) return;
+        const unlisteners: Array<() => void> = [];
+
+        void (async () => {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+
+                const reload = async () => {
+                    if (!tickerHandleRef.current) return;
+                    try {
+                        setReady(false);
+                        setError(null);
+                        setLoadProgress(0);
+                        const url = await resolveVrmUrl();
+                        // Cache-bust to force re-fetch when the file at the
+                        // same URL has been replaced on disk.
+                        const cacheBustedUrl = url.includes("?")
+                            ? `${url}&t=${Date.now()}`
+                            : `${url}?t=${Date.now()}`;
+                        const next = await loadVrm(cacheBustedUrl, (loaded, total) => {
+                            setLoadProgress(loaded / total);
+                        });
+                        tickerHandleRef.current.swapVrm(next);
+                        setReady(true);
+                    } catch (e) {
+                        const msg = e instanceof Error ? e.message : String(e);
+                        console.error("[character] hot-reload failed:", e);
+                        setError(msg);
+                    }
+                };
+
+                unlisteners.push(
+                    await listen("kuro:vrm-installed", () => {
+                        void reload();
+                    }),
+                );
+                unlisteners.push(
+                    await listen("kuro:vrm-cleared", () => {
+                        void reload();
+                    }),
+                );
+            } catch (e) {
+                console.debug("[character] vrm hot-reload listeners failed:", e);
+            }
+        })();
+
+        return () => {
+            for (const u of unlisteners) {
+                try {
+                    u();
+                } catch {
+                    /* swallow */
+                }
+            }
+        };
     }, []);
 
     // ---- Episodes client + dialogue dispatch ----

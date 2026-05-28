@@ -24,6 +24,7 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
 rdev = "0.5"
 sysinfo = "0.30"
 active-win-pos-rs = "0.8"

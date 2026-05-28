@@ -99,9 +99,12 @@ V1 may add new categories (`messaging`, `meeting`, `creative`) if the episode de
 ### Tauri commands (must stay registered in `invoke_handler!`)
 - `get_context() -> KuroContext`
 - `get_profile() -> KuroProfile`
-- `record_interaction(kind: String) -> u32` *(new, replaces `record_headpat`)*
+- `record_interaction(kind: String) -> u32` *(replaces v0 `record_headpat`)*
 - `force_episode(name: String)` *(debug, V1 settings page uses it)*
 - `set_dnd(enabled: bool)` *(triggers `withdrawn` episode entry/exit)*
+- `get_installed_vrm() -> Option<VrmInstalled>` *(returns the user-installed VRM file's path/size, or null)*
+- `install_vrm_from_path(source_path: String) -> VrmInstalled` *(copies a picked .vrm into app data dir, emits `kuro:vrm-installed` for hot-reload)*
+- `clear_installed_vrm()` *(deletes the installed file, emits `kuro:vrm-cleared`)*
 
 ### Events (payload shapes are stable — frontend listens by name)
 
@@ -117,12 +120,16 @@ New for V1:
 - `kuro:mood` — current mood vector (only on significant change)
 - `kuro:episode-start` — `{ episode, started_at, expected_duration_seconds, trigger_event? }`
 - `kuro:episode-end` — `{ episode, ended_at, exit_reason }`
+- `kuro:vrm-installed` — `{ path, size_bytes, original_name }` — the character window listens and hot-reloads the model
+- `kuro:vrm-cleared` — `null` payload — the character window goes back to the bundled fallback (or shows the friendly error overlay)
 
 When any payload shape changes, update `context.rs`, the listener in `components/character/character.tsx`, and this file in the same commit.
 
 ## Permissions
 
-Every Tauri API the frontend calls must have its permission in `src-tauri/capabilities/default.json`. The current set covers window position/size/cursor/visibility, event listen/emit, and the `store` plugin. Adding `invoke` of a new built-in plugin almost always needs a new entry here, or the call will silently fail with no error in the frontend.
+Every Tauri API the frontend calls must have its permission in `src-tauri/capabilities/default.json`. The current set covers window position/size/cursor/visibility, event listen/emit, the `store` plugin, and the `dialog` plugin (for the VRM file picker). Adding `invoke` of a new built-in plugin almost always needs a new entry here, or the call will silently fail with no error in the frontend.
+
+The asset protocol is enabled in `tauri.conf.json` with scope `$APPDATA/**/*` so the renderer can load user-installed VRM files from the app data directory via `convertFileSrc()`. Widening this scope (e.g. to `$HOME`) is a security decision — don't do it without a reason.
 
 V2 capabilities (L1 agency) will add a *substantial* permission set — clipboard, opener (URL launch), possibly notification, possibly process. Each gets its own settings toggle and audit log entry. Do not pre-register V2 permissions during V1.
 

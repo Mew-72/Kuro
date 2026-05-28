@@ -79,7 +79,11 @@ impl MoodVector {
         self.clamp();
     }
 
-    /// User clicked her many times in a short window.
+    /// User clicked her many times in a short window. Feeds the `huffy`
+    /// episode trigger. Not yet wired — the click-spam detector lives in
+    /// the frontend hit-area code and will call `record_interaction` with
+    /// a rate-limit signal at V1 implementation time.
+    #[allow(dead_code)]
     pub fn on_click_spam(&mut self) {
         self.annoyance += 0.15;
         self.clamp();
