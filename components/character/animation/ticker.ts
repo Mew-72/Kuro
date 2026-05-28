@@ -5,8 +5,8 @@
  * the character module. Every per-frame concern branches inside it.
  *
  * Layered, not switched:
- *   - Locomotion (target offset, yaw)
- *   - Gaze (look-at target)
+ *   - Locomotion (target offset, yaw on the character wrapper)
+ *   - Gaze (world-space look-at target the renderer owns)
  *   - Expression (blendshape weights)
  *   - VRM update (spring bones, look-at, expression apply)
  *   - Renderer draw
@@ -78,7 +78,10 @@ export function startTicker(
     const currentExpr: ExpressionTargets = emptyExpressionState();
 
     let activeVrm: VrmHandle = initialVrm;
-    bundle.scene.add(activeVrm.vrm.scene);
+    bundle.scene.add(activeVrm.root);
+    if (activeVrm.vrm.lookAt) {
+        activeVrm.vrm.lookAt.target = bundle.lookAtTarget;
+    }
 
     let raf = 0;
     let running = false;
@@ -87,19 +90,19 @@ export function startTicker(
         if (!running) return;
         const dt = bundle.clock.getDelta();
 
-        // --- Locomotion ---
+        // --- Locomotion (writes to character wrapper) ---
         updateLocomotionTarget(locomotion, inputs.episode);
         lerpLocomotion(locomotion, dt);
-        applyLocomotion(activeVrm.vrm.scene, locomotion);
+        applyLocomotion(activeVrm.root, locomotion);
 
-        // --- Gaze ---
+        // --- Gaze (writes to world-space lookAtTarget) ---
         updateGazeTarget(gaze, {
             cursor: inputs.cursor,
             windowSize: inputs.windowSize,
             episode: inputs.episode,
         });
         lerpGaze(gaze, 0.15);
-        activeVrm.setLookAt(gaze.current);
+        bundle.lookAtTarget.position.copy(gaze.current);
 
         // --- Expression ---
         const exprTarget = targetExpression(inputs.mood, inputs.episode);
@@ -132,18 +135,21 @@ export function startTicker(
             cancelAnimationFrame(raf);
         },
         swapVrm: (next: VrmHandle) => {
-            // Pull the old model out of the scene and dispose it, then
-            // attach the new one. Animation state (locomotion phase, gaze,
-            // expression weights) is preserved on purpose so the new model
-            // doesn't appear with a snap.
+            // Pull the old wrapper out of the scene and dispose, then
+            // attach the new one. Animation state (locomotion phase,
+            // gaze, expression weights) is preserved on purpose so the
+            // new model doesn't appear with a snap.
             try {
-                bundle.scene.remove(activeVrm.vrm.scene);
+                bundle.scene.remove(activeVrm.root);
                 activeVrm.dispose();
             } catch (e) {
                 console.debug("[ticker] dispose old VRM failed:", e);
             }
             activeVrm = next;
-            bundle.scene.add(activeVrm.vrm.scene);
+            bundle.scene.add(activeVrm.root);
+            if (activeVrm.vrm.lookAt) {
+                activeVrm.vrm.lookAt.target = bundle.lookAtTarget;
+            }
         },
     };
 }

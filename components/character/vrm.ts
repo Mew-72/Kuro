@@ -1,18 +1,30 @@
 /**
  * VRM loading and rig handle helpers.
  *
- * The model URL is resolved at runtime (see `resolveVrmUrl()`):
- *   1. If a user-installed VRM exists in the app data directory, that wins.
- *   2. Otherwise, fall back to a bundled `/character/model.vrm`.
- *   3. If neither exists, the loader fails and the friendly error overlay
- *      shows.
+ * Architecture
+ * ------------
+ * The loaded VRM scene is wrapped in a plain `THREE.Object3D` we call
+ * `root`. The wrapper is what gets added to the renderer scene. The VRM
+ * scene itself sits inside the wrapper.
+ *
+ * Why: VRM 0.x models export facing +Z and need a 180° Y-rotation to
+ * face the camera. If we apply that rotation directly to the VRM scene,
+ * any further yaw we want to add (e.g. "turn 30° left while pouty") has
+ * to be carefully composed on top. By keeping the corrective rotation
+ * *inside* the wrapper and animating yaw / position on the wrapper, the
+ * two concerns stay independent. VRM 1.0 models already face -Z, so the
+ * corrective rotation is a no-op for them — `VRMUtils.rotateVRM0`
+ * self-checks the metaVersion and only acts on VRM 0.
+ *
+ * The look-at target is owned by the renderer (in world space) so head
+ * tracking maths is independent of character rotation.
  *
  * The runtime accepts both VRM 0.x and VRM 1.0 — `@pixiv/three-vrm` 3.x
  * handles either through the same loader.
  *
  * Rig requirements are enforced by the design spec, not at runtime. If a
- * required blendshape is missing here, we degrade gracefully: expression
- * setters become no-ops rather than throwing.
+ * required blendshape is missing here, expression setters become no-ops
+ * rather than throwing.
  */
 
 import * as THREE from "three";
@@ -53,6 +65,11 @@ export async function resolveVrmUrl(): Promise<string> {
 
 export interface VrmHandle {
     vrm: VRM;
+    /**
+     * Wrapper Object3D added to the renderer scene. Locomotion (yaw,
+     * position offset) is applied here, not on `vrm.scene`.
+     */
+    root: THREE.Object3D;
     /** Per-frame update — must be called from the master ticker. */
     update: (deltaSeconds: number) => void;
     dispose: () => void;
@@ -60,8 +77,6 @@ export interface VrmHandle {
     setExpression: (name: VRMExpressionPresetName, value: number) => void;
     /** Read the current set value for an expression, or 0 if missing. */
     getExpression: (name: VRMExpressionPresetName) => number;
-    /** Set the look-at target in world space. */
-    setLookAt: (target: THREE.Vector3) => void;
 }
 
 /**
@@ -69,9 +84,14 @@ export interface VrmHandle {
  *
  * `onProgress` is forwarded for loading-overlay UX. Throws on network /
  * parse failures — callers must handle to show the friendly error overlay.
+ *
+ * The caller must provide the world-space `lookAtTarget` (owned by the
+ * renderer); the loader binds it to the VRM's lookAt component so head
+ * tracking works without further wiring.
  */
 export async function loadVrm(
     url: string,
+    lookAtTarget: THREE.Object3D,
     onProgress?: (loaded: number, total: number) => void,
 ): Promise<VrmHandle> {
     const loader = new GLTFLoader();
@@ -93,26 +113,28 @@ export async function loadVrm(
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
     VRMUtils.combineSkeletons(gltf.scene);
 
-    // VRM 0.x models face +Z by default; rotate to face the camera (-Z).
-    // VRM 1.0 already faces -Z. Detect and fix.
-    const isVrm0 = vrm.meta && (vrm.meta as { metaVersion?: string }).metaVersion === "0";
-    if (isVrm0) {
-        VRMUtils.rotateVRM0(vrm);
-    }
+    // VRM 0.x models face +Z; this rotates them to face -Z (the camera).
+    // The helper self-checks `meta.metaVersion === "0"`, so it's a no-op
+    // for VRM 1.0 models — safe to call unconditionally.
+    VRMUtils.rotateVRM0(vrm);
 
-    // Look-at target — a small invisible Object3D in front of the model.
-    const lookAtTarget = new THREE.Object3D();
-    lookAtTarget.position.set(0, 1.35, 1.5);
-    vrm.scene.add(lookAtTarget);
+    // Bind the world-space gaze target so head tracking works without
+    // having to push values through three-vrm each frame.
     if (vrm.lookAt) {
         vrm.lookAt.target = lookAtTarget;
     }
 
-    // Tame frustum culling for skinned meshes — VRM bounding boxes are often
-    // too tight and clip the model when it animates outside its rest pose.
+    // Tame frustum culling for skinned meshes — VRM bounding boxes are
+    // often too tight and clip the model when it animates outside its
+    // rest pose.
     vrm.scene.traverse((obj) => {
         obj.frustumCulled = false;
     });
+
+    // Wrapper pivot — locomotion goes on this, not on the VRM scene.
+    const root = new THREE.Object3D();
+    root.name = "kuro-character-root";
+    root.add(vrm.scene);
 
     const update = (deltaSeconds: number) => {
         vrm.update(deltaSeconds);
@@ -122,7 +144,10 @@ export async function loadVrm(
         VRMUtils.deepDispose(vrm.scene);
     };
 
-    const setExpression = (name: VRMExpressionPresetName, value: number) => {
+    const setExpression = (
+        name: VRMExpressionPresetName,
+        value: number,
+    ) => {
         if (!vrm.expressionManager) return;
         const expr = vrm.expressionManager.getExpression(name);
         if (!expr) return;
@@ -134,9 +159,5 @@ export async function loadVrm(
         return vrm.expressionManager.getValue(name) ?? 0;
     };
 
-    const setLookAt = (target: THREE.Vector3) => {
-        lookAtTarget.position.copy(target);
-    };
-
-    return { vrm, update, dispose, setExpression, getExpression, setLookAt };
+    return { vrm, root, update, dispose, setExpression, getExpression };
 }

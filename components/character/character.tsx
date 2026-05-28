@@ -118,6 +118,9 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
 
     // ---- Boot: renderer + VRM + ticker. Single useEffect, [] deps. ----
     const tickerHandleRef = useRef<TickerHandle | null>(null);
+    const rendererBundleRef = useRef<ReturnType<typeof createRenderer> | null>(
+        null,
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -127,12 +130,17 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
             if (!canvasRef.current) return;
             try {
                 const bundle = createRenderer(canvasRef.current);
+                rendererBundleRef.current = bundle;
                 cleanup.push(() => bundle.dispose());
 
                 const url = await resolveVrmUrl();
-                const vrm = await loadVrm(url, (loaded, total) => {
-                    if (!cancelled) setLoadProgress(loaded / total);
-                });
+                const vrm = await loadVrm(
+                    url,
+                    bundle.lookAtTarget,
+                    (loaded, total) => {
+                        if (!cancelled) setLoadProgress(loaded / total);
+                    },
+                );
                 if (cancelled) {
                     vrm.dispose();
                     return;
@@ -167,6 +175,7 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
         return () => {
             cancelled = true;
             tickerHandleRef.current = null;
+            rendererBundleRef.current = null;
             for (const fn of cleanup.reverse()) {
                 try {
                     fn();
@@ -190,6 +199,7 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
 
                 const reload = async () => {
                     if (!tickerHandleRef.current) return;
+                    if (!rendererBundleRef.current) return;
                     try {
                         setReady(false);
                         setError(null);
@@ -200,9 +210,13 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
                         const cacheBustedUrl = url.includes("?")
                             ? `${url}&t=${Date.now()}`
                             : `${url}?t=${Date.now()}`;
-                        const next = await loadVrm(cacheBustedUrl, (loaded, total) => {
-                            setLoadProgress(loaded / total);
-                        });
+                        const next = await loadVrm(
+                            cacheBustedUrl,
+                            rendererBundleRef.current.lookAtTarget,
+                            (loaded, total) => {
+                                setLoadProgress(loaded / total);
+                            },
+                        );
                         tickerHandleRef.current.swapVrm(next);
                         setReady(true);
                     } catch (e) {
@@ -538,7 +552,7 @@ const KuroCharacter = forwardRef<KuroCharacterHandle, {}>((_props, ref) => {
                         <div className="font-semibold mb-1">model unavailable</div>
                         <div className="text-neutral-600">{error}</div>
                         <div className="text-neutral-500 mt-1 text-[11px]">
-                            place a VRM file at <code>public/character/model.vrm</code>
+                            right-click → Settings → Load model...
                         </div>
                     </div>
                 </div>

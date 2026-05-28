@@ -2,25 +2,34 @@
  * Locomotion layer — drives whole-body pose intent.
  *
  * V1 keeps locomotion abstract: we publish a `LocomotionTarget` (where the
- * character should "be"), and the master ticker translates that into VRM
- * model rotation, position offset, and a tiny breathing/idle bob. Walk
- * cycles and bone-level locomotion are scaffolded but not driven by IK in
- * V1 — the VRM model rotates and slides, which reads acceptably for a
- * desktop pet at this scale.
+ * character should "be"), and the master ticker translates that into the
+ * character wrapper's rotation, position offset, and a tiny breathing
+ * bob. Walk cycles and bone-level locomotion are scaffolded but not
+ * driven by IK in V1 — the wrapper rotates and slides, which reads
+ * acceptably for a desktop pet at this scale.
  *
  * V2 will swap the slide for a real animation clip via VRMA, or hand-built
  * walk cycle on the humanoid bones.
+ *
+ * Locomotion writes to the *wrapper* `Object3D` returned by `loadVrm`,
+ * not to the VRM scene. The wrapper isolates locomotion yaw from the
+ * VRM-0 corrective rotation, which would otherwise compose awkwardly.
  */
 
 import * as THREE from "three";
 
 import type { EpisodeName } from "../types";
 
-export type LocomotionMode = "stand" | "walk_off" | "approach" | "turn_away" | "sit";
+export type LocomotionMode =
+    | "stand"
+    | "walk_off"
+    | "approach"
+    | "turn_away"
+    | "sit";
 
 export interface LocomotionState {
     mode: LocomotionMode;
-    /** Anchor X offset in world-space units. -1.0 .. 1.0 of the canvas width. */
+    /** Anchor X offset in world-space units. */
     currentOffsetX: number;
     targetOffsetX: number;
     /** Body Y rotation in radians. */
@@ -53,12 +62,12 @@ export function updateLocomotionTarget(
     switch (episode) {
         case "withdrawn":
             state.mode = "walk_off";
-            state.targetOffsetX = -1.6; // walk off-screen left
+            state.targetOffsetX = -1.4; // walk off-screen left
             state.targetYaw = -Math.PI / 6;
             break;
         case "pouty":
             state.mode = "turn_away";
-            state.targetOffsetX = 0.4;
+            state.targetOffsetX = 0.3;
             state.targetYaw = Math.PI * 0.65; // back partially turned
             break;
         case "clingy":
@@ -68,7 +77,7 @@ export function updateLocomotionTarget(
             break;
         case "huffy":
             state.mode = "stand";
-            state.targetOffsetX = -0.2;
+            state.targetOffsetX = -0.15;
             state.targetYaw = -Math.PI / 12;
             break;
         case "jealous":
@@ -93,18 +102,31 @@ export function updateLocomotionTarget(
 const LERP_POSITION = 0.04;
 const LERP_YAW = 0.05;
 
-export function lerpLocomotion(state: LocomotionState, deltaSeconds: number): void {
-    state.currentOffsetX += (state.targetOffsetX - state.currentOffsetX) * LERP_POSITION;
+export function lerpLocomotion(
+    state: LocomotionState,
+    deltaSeconds: number,
+): void {
+    state.currentOffsetX +=
+        (state.targetOffsetX - state.currentOffsetX) * LERP_POSITION;
     state.currentYaw += (state.targetYaw - state.currentYaw) * LERP_YAW;
     state.phase += deltaSeconds;
 }
 
-/** Apply locomotion state to the VRM scene root. */
-export function applyLocomotion(scene: THREE.Object3D, state: LocomotionState): void {
-    scene.position.x = state.currentOffsetX;
-    scene.rotation.y = state.currentYaw;
+/**
+ * Apply locomotion state to the character wrapper.
+ *
+ * Writes `position.x`, `position.y` (breathing bob), and `rotation.y`
+ * to the wrapper. The VRM-0 corrective rotation lives on the inner
+ * vrm.scene and is preserved.
+ */
+export function applyLocomotion(
+    root: THREE.Object3D,
+    state: LocomotionState,
+): void {
+    root.position.x = state.currentOffsetX;
+    root.rotation.y = state.currentYaw;
 
     // Tiny vertical bob for breathing feel — never stops, regardless of state.
     const breathe = Math.sin(state.phase * 1.6) * 0.005;
-    scene.position.y = breathe;
+    root.position.y = breathe;
 }
