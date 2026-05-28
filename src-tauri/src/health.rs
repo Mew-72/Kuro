@@ -25,7 +25,8 @@ fn get_battery_info() -> (u8, bool) {
     let manager = match battery::Manager::new() { Ok(m) => m, Err(_) => return (100, true) };
     let mut batteries = match manager.batteries() { Ok(b) => b, Err(_) => return (100, true) };
     if let Some(Ok(bat)) = batteries.next() {
-        let pct = (bat.state_of_charge().value * 100.0) as u8;
+        use battery::units::ratio::percent;
+        let pct = bat.state_of_charge().get::<percent>() as u8;
         let chg = bat.state() == battery::State::Charging || bat.state() == battery::State::Full;
         (pct, chg)
     } else { (100, true) }

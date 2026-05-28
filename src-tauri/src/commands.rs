@@ -28,9 +28,9 @@ pub fn get_context(state: tauri::State<'_, Arc<AppState>>) -> KuroContext {
     let title = state.current_title.lock().unwrap();
     let wpm = state.typing.current_wpm.load(Ordering::Relaxed);
     let now = chrono::Local::now();
+    use chrono::{Datelike, Timelike};
     let hour = now.hour();
     let weekday = now.weekday();
-    use chrono::{Datelike, Timelike};
     KuroContext {
         user_name: profile.user_name.clone(),
         device_name: profile.device_name.clone(),

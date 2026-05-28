@@ -201,17 +201,20 @@ pub fn run() {
                         let today = chrono::Local::now().date_naive();
                         if today != last_date {
                             last_date = today;
-                            // Save coding hours and reset session
-                            let mut profile = poll_state.profile.lock().unwrap();
-                            let session = poll_state.session.lock().unwrap();
-                            profile.total_coding_hours += session.coding_minutes() / 60;
-                            if session.longest_streak_minutes() > profile.longest_streak_ever {
-                                profile.longest_streak_ever = session.longest_streak_minutes();
+                            // Extract session stats first, then update profile
+                            let (coding_min, longest_min) = {
+                                let session = poll_state.session.lock().unwrap();
+                                (session.coding_minutes(), session.longest_streak_minutes())
+                            };
+                            {
+                                let mut profile = poll_state.profile.lock().unwrap();
+                                profile.total_coding_hours += coding_min / 60;
+                                if longest_min > profile.longest_streak_ever {
+                                    profile.longest_streak_ever = longest_min;
+                                }
+                                profile.total_days_active += 1;
+                                profile::save_profile(&poll_state.app_data_dir, &profile);
                             }
-                            profile.total_days_active += 1;
-                            profile::save_profile(&poll_state.app_data_dir, &profile);
-                            drop(profile);
-                            drop(session);
                             poll_state.session.lock().unwrap().reset();
                         }
                     }
